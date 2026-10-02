@@ -35,6 +35,7 @@ type Summary = {
 	series: { at: number; kind: string; count: number }[]
 	top_ips: Count[]
 	top_ports: Count[]
+	countries: Count[]
 	since: number
 	until: number
 	step: number
@@ -53,6 +54,7 @@ type SecurityEvent = {
 	path: string
 	port: number
 	status: number
+	country_code: string
 }
 type Events = { items: SecurityEvent[]; next_before: string }
 const kinds: Record<string, { label: string; color: string; badge: string }> = {
@@ -94,6 +96,18 @@ const tooltipStyle = {
 	color: "var(--foreground)",
 	border: "1px solid var(--border)",
 	borderRadius: 10,
+}
+
+const countryNames = new Intl.DisplayNames(["en"], { type: "region" })
+function countryName(code: string) {
+	if (code === "LOCAL") return "Non-public IP"
+	if (!/^[A-Z]{2}$/.test(code || "")) return "Unknown"
+	return countryNames.of(code) || code
+}
+function countryFlag(code: string) {
+	return /^[A-Z]{2}$/.test(code || "")
+		? String.fromCodePoint(...Array.from(code, (letter) => 127397 + letter.charCodeAt(0)))
+		: ""
 }
 
 export default function Security({ id }: { id?: string }) {
@@ -351,6 +365,14 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 					color="#0ea5e9"
 				/>
 				<Ranking
+					title="Countries"
+					description="Top 10 estimated sender IP countries across recorded events"
+					rows={(summary.countries || [])
+						.slice(0, 10)
+						.map((row) => ({ ...row, key: `${countryFlag(row.key)} ${countryName(row.key)}`.trim() }))}
+					color="#10b981"
+				/>
+				<Ranking
 					title="Most blocked ports"
 					description="Destination ports blocked by the firewall"
 					rows={summary.top_ports}
@@ -399,7 +421,11 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 			<p className="text-xs text-muted-foreground">
 				All time shows every stored event. Retention is configured on the collector. Probe labels identify suspicious
 				patterns and do not confirm a compromise. UFW logging may be rate limited. Visitor IP addresses in older web
-				logs cannot be verified.
+				logs cannot be verified. Countries estimate IP locations and may identify a proxy or VPN. Country data from{" "}
+				<a href="https://iptoasn.com/" target="_blank" rel="noreferrer" className="underline">
+					IPtoASN
+				</a>
+				.
 			</p>
 		</>
 	)
@@ -578,7 +604,7 @@ function EventTable({
 					<caption className="sr-only">{title} for this VPS</caption>
 					<thead className="bg-muted/60 text-foreground">
 						<tr>
-							{["Time", "Type", "Sender IP", "Activity details", "IP address source"].map((name) => (
+							{["Time", "Type", "Sender IP", "Country", "Activity details", "IP address source"].map((name) => (
 								<th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold" key={name}>
 									{name}
 								</th>
@@ -600,6 +626,12 @@ function EventTable({
 								</td>
 								<td className="whitespace-nowrap px-4 py-3 font-mono text-xs">
 									{event.client_ip || event.peer_ip || "Not recorded"}
+								</td>
+								<td
+									className="whitespace-nowrap px-4 py-3 text-xs"
+									title="Estimated country of the displayed IP address"
+								>
+									<span aria-hidden="true">{countryFlag(event.country_code)}</span> {countryName(event.country_code)}
 								</td>
 								<td className="min-w-72 max-w-md px-4 py-3 align-top text-xs leading-relaxed">
 									<SecurityEventDetail event={event} />

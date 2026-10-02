@@ -110,6 +110,12 @@ func securityBounds(e *core.RequestEvent) (int64, int64, error) {
 	return now.Add(-time.Duration(days) * 24 * time.Hour).Unix(), now.Unix() + 1, nil
 }
 
+// Older collector databases continue to work while enrichment is being installed.
+func securityCountriesReady(db *sql.DB) bool {
+	var count int
+	return db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ip_countries'").Scan(&count) == nil && count == 1
+}
+
 func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
 	since, until, err := securityBounds(e)
 	if err != nil {
@@ -194,7 +200,14 @@ func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
 	if err != nil {
 		return e.InternalServerError("Failed to query security history", err)
 	}
-	return e.JSON(http.StatusOK, map[string]any{"kinds": kinds, "series": series, "top_ips": insight, "top_ports": ports, "since": since, "until": until, "step": step, "system": e.Request.URL.Query().Get("system")})
+	countries := []count{}
+	if securityCountriesReady(db) {
+		countries, err = collect("SELECT COALESCE(c.country_code, ''), COUNT(*) FROM events e LEFT JOIN ip_countries c ON c.ip=COALESCE(NULLIF(e.client_ip,''),NULLIF(e.peer_ip,'')) WHERE e.occurred_at >= ? AND e.occurred_at < ? GROUP BY 1 ORDER BY 2 DESC,1", since, until)
+		if err != nil {
+			return e.InternalServerError("Failed to query country history", err)
+		}
+	}
+	return e.JSON(http.StatusOK, map[string]any{"kinds": kinds, "series": series, "top_ips": insight, "top_ports": ports, "countries": countries, "since": since, "until": until, "step": step, "system": e.Request.URL.Query().Get("system")})
 }
 
 func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
@@ -254,12 +267,23 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 	}
 	defer rows.Close()
 	items := []map[string]any{}
+	countryReady := securityCountriesReady(db)
 	for rows.Next() {
 		var v securityEvent
 		if err = rows.Scan(&v.ID, &v.At, &v.Source, &v.Kind, &v.PeerIP, &v.ClientIP, &v.Provenance, &v.Host, &v.Username, &v.Method, &v.Path, &v.Port, &v.Status); err != nil {
 			return e.InternalServerError("Failed to query security history", err)
 		}
-		items = append(items, map[string]any{"id": v.ID, "at": v.At, "source": v.Source, "kind": v.Kind, "peer_ip": v.PeerIP.String, "client_ip": v.ClientIP.String, "provenance": v.Provenance, "host": v.Host.String, "username": v.Username.String, "method": v.Method.String, "path": v.Path.String, "port": v.Port.Int64, "status": v.Status.Int64})
+		country := ""
+		if countryReady {
+			ip := v.ClientIP.String
+			if ip == "" {
+				ip = v.PeerIP.String
+			}
+			if err := db.QueryRow("SELECT country_code FROM ip_countries WHERE ip=?", ip).Scan(&country); err != nil && err != sql.ErrNoRows {
+				return e.InternalServerError("Failed to query country history", err)
+			}
+		}
+		items = append(items, map[string]any{"country_code": country, "id": v.ID, "at": v.At, "source": v.Source, "kind": v.Kind, "peer_ip": v.PeerIP.String, "client_ip": v.ClientIP.String, "provenance": v.Provenance, "host": v.Host.String, "username": v.Username.String, "method": v.Method.String, "path": v.Path.String, "port": v.Port.Int64, "status": v.Status.Int64})
 	}
 	if err = rows.Err(); err != nil {
 		return e.InternalServerError("Failed to query security history", err)

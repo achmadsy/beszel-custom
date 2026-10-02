@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import urllib.request
 from pathlib import Path
+from countries import enrich as enrich_countries
 
 DB = Path(os.environ.get("SECURITY_DB", "/var/lib/beszel-security/events.db"))
 AUDIT_LOG = Path("/var/log/nginx/beszel-security.log")
@@ -50,6 +51,7 @@ def init(db):
     db.execute("CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, source_id TEXT UNIQUE NOT NULL, occurred_at INTEGER NOT NULL, source TEXT NOT NULL, kind TEXT NOT NULL, peer_ip TEXT, client_ip TEXT, provenance TEXT NOT NULL, host TEXT, username TEXT, method TEXT, path TEXT, port INTEGER, status INTEGER)")
     db.execute("CREATE INDEX IF NOT EXISTS events_time ON events(occurred_at DESC, id DESC)")
     db.execute("CREATE INDEX IF NOT EXISTS events_kind_time ON events(kind, occurred_at DESC)")
+    db.execute("CREATE TABLE IF NOT EXISTS ip_countries (ip TEXT PRIMARY KEY, country_code TEXT NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS cursors (source TEXT PRIMARY KEY, value TEXT NOT NULL)")
 
 
@@ -321,6 +323,7 @@ def collect():
         web(db, cf_ranges(db))
         historic_system(db)
         historic_web(db)
+        enrich_countries(db, DB.parent)
         if CUTOFF:
             db.execute("DELETE FROM events WHERE occurred_at < ?", (int(CUTOFF.timestamp()),))
         db.commit()

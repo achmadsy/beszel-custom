@@ -15,7 +15,7 @@ export function presetRange(preset: Exclude<SecurityDateRange["preset"], "custom
 	if (preset === "30d") start.setDate(start.getDate() - 29)
 	return { from: dateKey(start), to: dateKey(end), preset }
 }
-export function rangeParams(range: SecurityDateRange) {
+export function rangeParams(range: SecurityDateRange): Record<string, string> {
 	if (range.preset === "all") return { range: "all" }
 	const end = new Date(`${range.to}T00:00:00`)
 	end.setDate(end.getDate() + 1)

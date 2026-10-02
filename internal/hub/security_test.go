@@ -97,6 +97,12 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		if i == 0 {
+			_, err = db.Exec("CREATE TABLE ip_countries(ip TEXT PRIMARY KEY,country_code TEXT NOT NULL); INSERT INTO ip_countries VALUES ('8.8.8.8','US'); UPDATE events SET peer_ip='9.0.0.1',client_ip='8.8.8.8'")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		db.Close()
 	}
 	config, _ := json.Marshal(paths)
@@ -123,6 +129,19 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		var countries []struct {
+			Key   string
+			Count int
+		}
+		if err := json.Unmarshal(result["countries"], &countries); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 && (len(countries) != 1 || countries[0].Key != "US" || countries[0].Count != i+2) {
+			t.Fatalf("country aggregation incorrect: %s", result["countries"])
+		}
+		if i == 1 && len(countries) != 0 {
+			t.Fatal("country data leaked into older VPS database")
+		}
 		var counts []struct {
 			Key   string
 			Count int
@@ -148,6 +167,12 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 		json.Unmarshal(result["items"], &items)
 		if len(items) != 1 || items[0]["username"] != id {
 			t.Fatalf("another VPS's events returned: %s", result["items"])
+		}
+		if i == 0 && items[0]["country_code"] != "US" {
+			t.Fatal("event did not use visitor IP country")
+		}
+		if i == 1 && items[0]["country_code"] != "" {
+			t.Fatal("older collector country fallback failed")
 		}
 		var cursor string
 		json.Unmarshal(result["next_before"], &cursor)

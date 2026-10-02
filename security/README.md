@@ -51,6 +51,7 @@ sudo usermod -aG adm,systemd-journal beszel-audit
 sudo install -d -m 0755 /opt/beszel-security
 sudo install -d -m 0700 -o beszel-audit -g beszel-audit /var/lib/beszel-security
 sudo install -m 0755 security/collector.py /opt/beszel-security/collector.py
+sudo install -m 0644 security/countries.py /opt/beszel-security/countries.py
 sudo install -m 0644 security/beszel-security.service /etc/systemd/system/
 sudo install -m 0644 security/beszel-security.timer /etc/systemd/system/
 ```
@@ -247,3 +248,15 @@ API clients can send `from` and `to` as Unix timestamps in seconds. `from` is in
 SSH details show the recorded username and source port. Missing values say **Not recorded for this event**. Expand **Example SSH command (illustration)** to see a sample connection command with placeholders explained. The collector does not capture the original client command or commands run inside an SSH session. Source ports are sender-side ports. They are not the destination SSH port on the VPS.
 
 The **IP address source** column explains whether an address came directly from a VPS service, a verified Cloudflare proxy, an unverified Nginx connection, or an older web log.
+
+## IP countries
+
+The country chart shows the ten countries with the most recorded events in the selected VPS and date range. Every event table includes a country name and flag for its displayed sender IP. Unknown and non-public addresses have explicit labels. Country counts include all event types, including normal web requests.
+
+The collector downloads IPv4 and IPv6 country ranges from [IPtoASN](https://iptoasn.com/) and performs lookups locally. It sends no event IPs to a lookup API. The compressed databases are cached next to `events.db` and refreshed weekly. Compact binary caches provide local lookups without parsing the complete datasets on each collection. New IPs are enriched on the next collector run. Existing events are enriched automatically, so another historical log import is not required. Country mappings use the current database rather than the assignment at the time of the event.
+
+No API key or extra Python package is required. The first run needs outbound HTTPS access to `iptoasn.com`. Failed refreshes keep valid cached data and do not interrupt log collection. Missing country databases leave public IP countries unknown and retry downloads at most hourly. Non-public IPs are labelled separately. Country mappings are included in SQLite snapshots for remote VPSes.
+
+Country labels estimate an IP's country. They do not establish a person's location, nationality, or identity. A VPN, proxy, or hosting server can determine the displayed country. Verified Cloudflare visitor addresses take priority over peer addresses. Older unverified web logs can identify a proxy's country instead. Older collector databases continue to work without country enrichment, showing Unknown until the collector is upgraded.
+
+To upgrade an existing installation, copy both `collector.py` and `countries.py` using step 2, then run `sudo systemctl start beszel-security.service`. Check its journal for country download or lookup progress.
