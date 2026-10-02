@@ -1,0 +1,28 @@
+[Unit]
+Description=Collect VPS security events for Beszel
+After=systemd-journald.service nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/beszel-security/collector.py
+User=beszel-audit
+Group=beszel-audit
+SupplementaryGroups=adm systemd-journal
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/beszel-security
+ReadOnlyPaths=/var/log/nginx /var/log/journal /run/log/journal

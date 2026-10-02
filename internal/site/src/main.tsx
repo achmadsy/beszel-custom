@@ -31,6 +31,7 @@ const Home = lazy(() => import("@/components/routes/home.tsx"))
 const Containers = lazy(() => import("@/components/routes/containers.tsx"))
 const Smart = lazy(() => import("@/components/routes/smart.tsx"))
 const Monitors = lazy(() => import("@/components/routes/monitors.tsx"))
+const Security = lazy(() => import("@/components/routes/security.tsx"))
 const SystemDetail = lazy(() => import("@/components/routes/system.tsx"))
 const CopyToClipboardDialog = lazy(() => import("@/components/copy-to-clipboard.tsx"))
 
@@ -82,6 +83,8 @@ const App = memo(() => {
 		return <Smart />
 	} else if (page.route === "monitors") {
 		return <Monitors />
+	} else if (page.route === "security") {
+		return isAdmin() ? <Security id={page.params.id} /> : <h1 className="text-3xl text-center my-14">403</h1>
 	} else if (page.route === "settings") {
 		return <Settings />
 	}

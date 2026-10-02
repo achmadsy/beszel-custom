@@ -25,6 +25,9 @@ import { GpuIcon } from "../ui/icons"
 import SystemdTable from "../systemd-table/systemd-table"
 import ContainersTable from "../containers-table/containers-table"
 
+import { isAdmin } from "@/lib/api"
+import { Link, prependBasePath } from "@/components/router"
+
 const SEMVER_0_14_0 = parseSemVer("0.14.0")
 const SEMVER_0_15_0 = parseSemVer("0.15.0")
 
@@ -309,6 +312,8 @@ export default memo(function SystemDetail({ id }: { id: string }) {
 				setDisplayMode={setDisplayMode}
 				details={details}
 			/>
+
+			{isAdmin() && <Link href={prependBasePath(`/security/${id}`)} className="justify-self-start rounded-lg border border-sky-300 bg-sky-50 px-4 py-2 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200">Riwayat keamanan VPS →</Link>}
 
 			{displayMode === "tabs" ? tabbedLayout() : defaultLayout()}
 		</div>

@@ -11,6 +11,7 @@ import {
 	NetworkIcon,
 	PlusIcon,
 	SearchIcon,
+	ShieldCheckIcon,
 	ServerIcon,
 	SettingsIcon,
 	UserIcon,
@@ -116,6 +117,12 @@ export default function Navbar() {
 								<NetworkIcon className="h-4 w-4 me-2.5" strokeWidth={1.5} />
 								<Trans>Network Monitors</Trans>
 							</DropdownMenuItem>
+							{isAdmin() && (
+								<DropdownMenuItem onClick={() => navigate(getPagePath($router, "security"))} className="flex items-center">
+									<ShieldCheckIcon className="h-4 w-4 me-2.5" strokeWidth={1.5} />
+									Riwayat Keamanan
+								</DropdownMenuItem>
+							)}
 							<DropdownMenuItem
 								onClick={() => navigate(getPagePath($router, "settings", { name: "general" }))}
 								className="flex items-center"
@@ -202,6 +209,16 @@ export default function Navbar() {
 						<Trans>Network Monitors</Trans>
 					</TooltipContent>
 				</Tooltip>
+				{isAdmin() && (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Link href={getPagePath($router, "security")} className={cn(buttonVariants({ variant: "ghost", size: "icon" }))} aria-label="Riwayat Keamanan">
+								<ShieldCheckIcon className="h-[1.2rem] w-[1.2rem]" strokeWidth={1.5} />
+							</Link>
+						</TooltipTrigger>
+						<TooltipContent>Riwayat Keamanan</TooltipContent>
+					</Tooltip>
+				)}
 				<ModeToggle />
 				<Tooltip>
 					<TooltipTrigger asChild>
