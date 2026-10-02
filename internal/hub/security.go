@@ -208,7 +208,47 @@ func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
 			return e.InternalServerError("Failed to query country history", err)
 		}
 	}
-	return e.JSON(http.StatusOK, map[string]any{"kinds": kinds, "series": series, "top_ips": insight, "top_ports": ports, "countries": countries, "since": since, "until": until, "step": step, "system": e.Request.URL.Query().Get("system")})
+	sshIPs, err := collect("SELECT COALESCE(NULLIF(client_ip,''),peer_ip,'unknown'),COUNT(*) FROM events WHERE occurred_at>=? AND occurred_at<? AND kind IN ('ssh_failure','ssh_probe') GROUP BY 1 ORDER BY 2 DESC LIMIT 10", since, until)
+	if err != nil {
+		return e.InternalServerError("Failed to query SSH rankings", err)
+	}
+	type usernameCount struct {
+		Key       string `json:"key"`
+		Count     int    `json:"count"`
+		UniqueIPs int    `json:"unique_ips"`
+	}
+	users := []usernameCount{}
+	userRows, err := db.Query("SELECT username,COUNT(*),COUNT(DISTINCT COALESCE(NULLIF(client_ip,''),peer_ip)) FROM events WHERE occurred_at>=? AND occurred_at<? AND kind IN ('ssh_failure','ssh_probe') AND COALESCE(username,'')!='' GROUP BY username ORDER BY 2 DESC,username LIMIT 10", since, until)
+	if err != nil {
+		return e.InternalServerError("Failed to query username rankings", err)
+	}
+	for userRows.Next() {
+		var user usernameCount
+		if err = userRows.Scan(&user.Key, &user.Count, &user.UniqueIPs); err != nil {
+			userRows.Close()
+			return e.InternalServerError("Failed to query username rankings", err)
+		}
+		users = append(users, user)
+	}
+	err = userRows.Err()
+	userRows.Close()
+	if err != nil {
+		return e.InternalServerError("Failed to query username rankings", err)
+	}
+	categoryColumn := securityCategoryColumn(db)
+	categories, err := collect("SELECT "+categoryColumn+",COUNT(*) FROM events WHERE occurred_at>=? AND occurred_at<? AND kind='web_probe' AND "+categoryColumn+"!='' GROUP BY 1 ORDER BY 2 DESC", since, until)
+	if err != nil {
+		return e.InternalServerError("Failed to query probe categories", err)
+	}
+	paths, err := collect("SELECT path,COUNT(*) FROM events WHERE occurred_at>=? AND occurred_at<? AND kind='web_probe' AND COALESCE(path,'')!='' GROUP BY path ORDER BY 2 DESC,path LIMIT 10", since, until)
+	if err != nil {
+		return e.InternalServerError("Failed to query probe paths", err)
+	}
+	collector, err := securityCollectorStatus(db)
+	if err != nil {
+		return e.InternalServerError("Failed to query collector status", err)
+	}
+	return e.JSON(http.StatusOK, map[string]any{"kinds": kinds, "series": series, "top_ips": insight, "top_ports": ports, "top_ssh_ips": sshIPs, "top_usernames": users, "web_categories": categories, "top_web_paths": paths, "collector": collector, "countries": countries, "since": since, "until": until, "step": step, "system": e.Request.URL.Query().Get("system")})
 }
 
 func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
@@ -259,7 +299,24 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 		countryColumn = "COALESCE(c.country_code, '')"
 		eventSource += " LEFT JOIN ip_countries c ON c.ip=COALESCE(NULLIF(events.client_ip,''),NULLIF(events.peer_ip,''))"
 	}
-	query := "SELECT id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status," + countryColumn + " FROM " + eventSource + " WHERE occurred_at >= ? AND occurred_at < ? AND (occurred_at < ? OR (occurred_at = ? AND id < ?))"
+	known, err := knownSecurityIPs(e.App, q.Get("system"))
+	if err != nil {
+		return e.InternalServerError("Could not load known IPs", err)
+	}
+	knownPredicate := knownIPPredicate(known)
+	categoryColumn := securityCategoryColumn(db)
+	ipStatus, authMethod, category := q.Get("ip_status"), q.Get("auth_method"), q.Get("web_category")
+	if ipStatus != "" && ipStatus != "known" && ipStatus != "unrecognized" {
+		return e.BadRequestError("invalid IP status", nil)
+	}
+	if authMethod != "" && authMethod != "publickey" && authMethod != "password" && authMethod != "keyboard-interactive" && authMethod != "unavailable" {
+		return e.BadRequestError("invalid authentication method", nil)
+	}
+	allowedCategories := map[string]bool{"": true, "sensitive_files": true, "wordpress": true, "php_tooling": true, "admin_panels": true, "traversal_injection": true, "other_probes": true}
+	if !allowedCategories[category] {
+		return e.BadRequestError("invalid web category", nil)
+	}
+	query := "SELECT id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status," + countryColumn + "," + categoryColumn + " FROM " + eventSource + " WHERE occurred_at >= ? AND occurred_at < ? AND (occurred_at < ? OR (occurred_at = ? AND id < ?))"
 	args := []any{since, until, beforeTime, beforeTime, beforeID}
 	if source != "" {
 		query += " AND source = ?"
@@ -275,6 +332,35 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 			country = ""
 		}
 		args = append(args, country)
+	}
+	if ipStatus != "" {
+		query += " AND kind='ssh_success' AND " + knownPredicate
+		if ipStatus == "unrecognized" {
+			query += "=0"
+		}
+	}
+	if authMethod != "" {
+		query += " AND source='ssh'"
+		switch authMethod {
+		case "unavailable":
+			query += " AND COALESCE(method,'')=''"
+		case "keyboard-interactive":
+			query += " AND method IN ('keyboard-interactive','keyboard-interactive/pam')"
+		default:
+			query += " AND method=?"
+			args = append(args, authMethod)
+		}
+	}
+	if category != "" {
+		query += " AND kind='web_probe' AND " + categoryColumn + "=?"
+		args = append(args, category)
+	}
+	attemptsOnly := q.Get("ssh_attempts")
+	if attemptsOnly != "" && attemptsOnly != "true" {
+		return e.BadRequestError("invalid SSH attempts filter", nil)
+	}
+	if attemptsOnly == "true" {
+		query += " AND kind IN ('ssh_failure','ssh_probe')"
 	}
 	query += " ORDER BY occurred_at DESC, id DESC LIMIT ?"
 	search := strings.TrimSpace(q.Get("q"))
@@ -296,11 +382,27 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 	items := []map[string]any{}
 	for rows.Next() {
 		var v securityEvent
-		var country string
-		if err = rows.Scan(&v.ID, &v.At, &v.Source, &v.Kind, &v.PeerIP, &v.ClientIP, &v.Provenance, &v.Host, &v.Username, &v.Method, &v.Path, &v.Port, &v.Status, &country); err != nil {
+		var country, category string
+		if err = rows.Scan(&v.ID, &v.At, &v.Source, &v.Kind, &v.PeerIP, &v.ClientIP, &v.Provenance, &v.Host, &v.Username, &v.Method, &v.Path, &v.Port, &v.Status, &country, &category); err != nil {
 			return e.InternalServerError("Failed to query security history", err)
 		}
-		items = append(items, map[string]any{"country_code": country, "id": v.ID, "at": v.At, "source": v.Source, "kind": v.Kind, "peer_ip": v.PeerIP.String, "client_ip": v.ClientIP.String, "provenance": v.Provenance, "host": v.Host.String, "username": v.Username.String, "method": v.Method.String, "path": v.Path.String, "port": v.Port.Int64, "status": v.Status.Int64})
+		ip := v.ClientIP.String
+		if ip == "" {
+			ip = v.PeerIP.String
+		}
+		knownIP, label := knownIPLabel(ip, known)
+		var priorFailures int64
+		status := ""
+		if v.Kind == "ssh_success" {
+			status = "unrecognized"
+			if knownIP {
+				status = "known"
+			}
+			if err = db.QueryRow("SELECT COUNT(*) FROM events WHERE source='ssh' AND kind='ssh_failure' AND COALESCE(NULLIF(client_ip,''),peer_ip)=? AND occurred_at>=? AND occurred_at<=?", ip, v.At-86400, v.At).Scan(&priorFailures); err != nil {
+				return e.InternalServerError("Failed to query prior authentication failures", err)
+			}
+		}
+		items = append(items, map[string]any{"web_category": category, "ip_status": status, "known_ip_label": label, "prior_failures_24h": priorFailures, "country_code": country, "id": v.ID, "at": v.At, "source": v.Source, "kind": v.Kind, "peer_ip": v.PeerIP.String, "client_ip": v.ClientIP.String, "provenance": v.Provenance, "host": v.Host.String, "username": v.Username.String, "method": v.Method.String, "path": v.Path.String, "port": v.Port.Int64, "status": v.Status.Int64})
 	}
 	if err = rows.Err(); err != nil {
 		return e.InternalServerError("Failed to query security history", err)

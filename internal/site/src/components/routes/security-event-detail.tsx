@@ -1,3 +1,5 @@
+import { authMethodLabel } from "./security-analysis-labels"
+
 export type EventDetailData = {
 	source: string
 	kind: string
@@ -24,6 +26,7 @@ export function SecurityEventDetail({ event }: { event: EventDetailData }) {
 		return (
 			<div className="space-y-1">
 				<p className="font-medium">{description}</p>
+				<p>Authentication method: {authMethodLabel(event.method)}</p>
 				<p>
 					Username:{" "}
 					<span className={event.username ? "font-mono" : "text-muted-foreground"}>

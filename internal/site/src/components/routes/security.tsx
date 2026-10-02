@@ -28,6 +28,8 @@ import {
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { SecurityKnownIPs } from "./security-known-ips"
+import { authMethodLabel, webCategories } from "./security-analysis-labels"
 import { SecurityCountryFilter } from "./security-country-filter"
 import { SecurityCountryMap } from "./security-country-map"
 import { Button } from "@/components/ui/button"
@@ -35,7 +37,22 @@ import { ChartContainer } from "@/components/ui/chart"
 import { Link, navigate, prependBasePath } from "@/components/router"
 
 type Count = { key: string; count: number }
+type EventFilters = { search?: string; category?: string; sshAttempts?: boolean; webProbes?: boolean }
+type CollectorStatus = {
+	status: string
+	started_at?: number
+	finished_at?: number
+	last_success_at?: number
+	oldest_event_at?: number
+	newest_event_at?: number
+	error?: string
+}
 type Summary = {
+	collector?: CollectorStatus
+	top_ssh_ips?: Count[]
+	top_usernames?: (Count & { unique_ips: number })[]
+	web_categories?: Count[]
+	top_web_paths?: Count[]
 	kinds: Count[]
 	series: { at: number; kind: string; count: number }[]
 	top_ips: Count[]
@@ -46,6 +63,10 @@ type Summary = {
 	step: number
 }
 type SecurityEvent = {
+	web_category?: string
+	ip_status?: string
+	known_ip_label?: string
+	prior_failures_24h?: number
 	id: number
 	at: number
 	source: string
@@ -170,17 +191,24 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 	const [eventsOpen, setEventsOpen] = useState(false)
 	const [eventTab, setEventTab] = useState("events")
 	const [chartMode, setChartMode] = useState("security")
+	const [revision, setRevision] = useState(0)
+	const [insightsOpen, setInsightsOpen] = useState(false)
+	const [eventFilters, setEventFilters] = useState<EventFilters>({})
+	const [jumpRevision, setJumpRevision] = useState(0)
 	useEffect(() => {
 		const controller = new AbortController()
 		pb.send<Summary>(`/api/beszel/security/summary?${new URLSearchParams({ system, ...rangeParams(range) })}`, {
 			signal: controller.signal,
 		})
-			.then(setSummary)
+			.then((data) => {
+				setSummary(data)
+				setError("")
+			})
 			.catch((err) => {
 				if (!controller.signal.aborted) setError(err.message || "Could not load security history")
 			})
 		return () => controller.abort()
-	}, [system, range])
+	}, [system, range, revision])
 	const data = useMemo(() => {
 		if (!summary) return []
 		const rows = new Map<number, Record<string, number>>()
@@ -225,12 +253,54 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 					? { hour: "2-digit", minute: "2-digit" }
 					: { day: "numeric", month: "short", hour: "2-digit" },
 		)
-	const jump = (target: string) => {
+	const jump = (target: string, filters: EventFilters = {}) => {
+		setEventFilters(filters)
+		setJumpRevision((value) => value + 1)
 		setEventTab(target)
 		setEventsOpen(true)
 	}
 	return (
 		<>
+			<section className={`${panel} flex flex-wrap items-center justify-between gap-3`}>
+				<div className="min-w-0 space-y-1 text-xs">
+					<p
+						className={`font-medium ${summary.collector?.status === "failed" || summary.collector?.status === "delayed" ? "text-amber-600 dark:text-amber-300" : "text-muted-foreground"}`}
+					>
+						{summary.collector?.status === "success"
+							? "Collector healthy"
+							: summary.collector?.status === "running"
+								? "Collection in progress"
+								: summary.collector?.status === "failed"
+									? "Collection failed"
+									: summary.collector?.status === "delayed"
+										? "Data delayed"
+										: "Collector status unavailable"}
+					</p>
+					<p className="text-muted-foreground">
+						Last collected:{" "}
+						{summary.collector?.last_success_at
+							? new Date(summary.collector.last_success_at * 1000).toLocaleString("en")
+							: "Unavailable"}
+					</p>
+					{summary.collector?.oldest_event_at && (
+						<p className="text-muted-foreground">
+							Stored history: {new Date(summary.collector.oldest_event_at * 1000).toLocaleDateString("en")} to{" "}
+							{new Date(
+								(summary.collector.newest_event_at || summary.collector.oldest_event_at) * 1000,
+							).toLocaleDateString("en")}
+						</p>
+					)}
+					{summary.collector?.error && (
+						<p className="text-muted-foreground">Error: {summary.collector.error}. Check the collector journal.</p>
+					)}
+				</div>
+				<div className="flex gap-2">
+					<SecurityKnownIPs system={system} onSaved={() => setRevision((value) => value + 1)} />
+					<Button variant="outline" size="sm" onClick={() => setRevision((value) => value + 1)}>
+						Refresh status
+					</Button>
+				</div>
+			</section>
 			<div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
 				{[
 					{ name: "total", label: "Total events", count: total, target: "events", color: "#0ea5e9" },
@@ -288,7 +358,7 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 							]}
 						/>
 					</div>
-					<ChartContainer className="h-72 w-full">
+					<ChartContainer className="h-72 w-full overflow-hidden">
 						<AreaChart data={data} margin={{ top: 12, right: 12, left: 0, bottom: 4 }} accessibilityLayer>
 							<defs>
 								{selectedKinds.map((key) => (
@@ -335,7 +405,7 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 					<h2 className="font-semibold">Event breakdown</h2>
 					<p className="text-xs text-muted-foreground">Share of events within the selected dates</p>
 					{total ? (
-						<ChartContainer className="h-52 w-full">
+						<ChartContainer className="h-52 w-full overflow-hidden">
 							<PieChart accessibilityLayer>
 								<Pie
 									data={summary.kinds}
@@ -417,6 +487,58 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 					</div>
 				</section>
 			</div>
+			<section className={panel}>
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<div>
+						<h2 className="font-semibold">SSH and web insights</h2>
+						<p className="text-xs text-muted-foreground">
+							Attempted usernames, SSH sources, and probe categories within the selected dates.
+						</p>
+					</div>
+					<Button
+						variant="outline"
+						size="sm"
+						aria-expanded={insightsOpen}
+						aria-controls="security-insights"
+						onClick={() => setInsightsOpen(!insightsOpen)}
+					>
+						{insightsOpen ? "Hide insights" : "Show insights"}
+					</Button>
+				</div>
+				{insightsOpen && (
+					<div id="security-insights" className="mt-4 grid gap-4 lg:grid-cols-2">
+						<Ranking
+							title="Most attempted usernames"
+							description="SSH failures and probes. Select a username to inspect attempts."
+							rows={summary.top_usernames || []}
+							color="#f43f5e"
+							onSelect={(key) => jump("events", { search: key, sshAttempts: true })}
+						/>
+						<Ranking
+							title="SSH attempt sources"
+							description="SSH failures and probes, excluding successful logins."
+							rows={summary.top_ssh_ips || []}
+							color="#f97316"
+							onSelect={(key) => jump("events", { search: key, sshAttempts: true })}
+						/>
+						<Ranking
+							title="Web probe categories"
+							description="Patterns in recorded requests, not confirmed exploits."
+							rows={summary.web_categories || []}
+							color="#8b5cf6"
+							label={(key) => webCategories[key] || key}
+							onSelect={(category) => jump("events", { category })}
+						/>
+						<Ranking
+							title="Most probed paths"
+							description="Query strings removed and token-like path segments masked."
+							rows={summary.top_web_paths || []}
+							color="#0ea5e9"
+							onSelect={(key) => jump("events", { search: key, webProbes: true })}
+						/>
+					</div>
+				)}
+			</section>
 			<SecurityCountryMap rows={summary.countries || []} />
 			<section className={`${panel} flex flex-wrap items-center justify-between gap-3`}>
 				<div>
@@ -462,12 +584,19 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 							</TabsTrigger>
 						</TabsList>
 						<TabsContent value="events" className="min-h-0 flex-1 overflow-y-auto">
-							<AllEvents system={system} range={range} countries={summary.countries || []} />
+							<AllEvents
+								key={`${revision}:${jumpRevision}`}
+								system={system}
+								range={range}
+								countries={summary.countries || []}
+								initialFilters={eventFilters}
+							/>
 						</TabsContent>
 						<TabsContent value="ssh_success" className="min-h-0 flex-1 overflow-y-auto">
 							<EventTable
 								system={system}
 								range={range}
+								key={`success:${revision}:${jumpRevision}`}
 								fixedKind="ssh_success"
 								title="SSH success"
 								total={successes}
@@ -478,6 +607,7 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 							<EventTable
 								system={system}
 								range={range}
+								key={`failure:${revision}:${jumpRevision}`}
 								fixedKind="ssh_failure"
 								title="SSH failure"
 								total={failures}
@@ -506,24 +636,33 @@ function Ranking({
 	description,
 	rows,
 	color,
+	onSelect,
+	label = (key) => key,
 }: {
 	title: string
 	description: string
 	rows: Count[]
 	color: string
+	onSelect?: (key: string) => void
+	label?: (key: string) => string
 }) {
 	return (
 		<section className={panel}>
 			<h2 className="font-semibold">{title}</h2>
 			<p className="mb-4 text-xs text-muted-foreground">{description}</p>
 			{rows.length ? (
-				<ChartContainer className="w-full" style={{ height: Math.max(140, rows.length * 30) }}>
-					<BarChart data={rows} layout="vertical" margin={{ left: 0, right: 16 }} accessibilityLayer>
+				<ChartContainer className="w-full overflow-hidden" style={{ height: Math.max(140, rows.length * 30) }}>
+					<BarChart
+						data={rows.map((row) => ({ ...row, label: label(row.key) }))}
+						layout="vertical"
+						margin={{ left: 0, right: 16 }}
+						accessibilityLayer
+					>
 						<CartesianGrid horizontal={false} strokeDasharray="3 3" />
 						<XAxis type="number" allowDecimals={false} tickLine={false} axisLine={false} />
 						<YAxis
 							type="category"
-							dataKey="key"
+							dataKey="label"
 							width={130}
 							tickFormatter={(value: string) =>
 								value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-5)}` : value
@@ -539,19 +678,53 @@ function Ranking({
 							formatter={(value) => [formatNumber(Number(value)), "Event"]}
 							cursor={{ fill: "var(--muted)" }}
 						/>
-						<Bar dataKey="count" fill={color} radius={[0, 4, 4, 0]} isAnimationActive={false} />
+						<Bar
+							dataKey="count"
+							fill={color}
+							radius={[0, 4, 4, 0]}
+							isAnimationActive={false}
+							onClick={(row) => onSelect?.(row.key)}
+							cursor={onSelect ? "pointer" : undefined}
+						/>
 					</BarChart>
 				</ChartContainer>
 			) : (
 				<p className="py-10 text-sm text-muted-foreground">No data recorded</p>
 			)}
+			{onSelect && !!rows.length && (
+				<div className="mt-3 flex flex-wrap gap-2">
+					{rows.map((row) => (
+						<button
+							type="button"
+							key={row.key}
+							onClick={() => onSelect(row.key)}
+							className="rounded-md border px-2 py-1 text-left text-xs hover:bg-muted"
+						>
+							{label(row.key)}: {formatNumber(row.count)}
+							{"unique_ips" in row ? ` from ${Number(row.unique_ips)} unique IPs` : ""}
+						</button>
+					))}
+				</div>
+			)}
 		</section>
 	)
 }
 
-function AllEvents({ system, range, countries }: { system: string; range: DateRange; countries: Count[] }) {
-	const [source, setSource] = useState("")
-	const [kind, setKind] = useState("")
+function AllEvents({
+	system,
+	range,
+	countries,
+	initialFilters = {},
+}: {
+	system: string
+	range: DateRange
+	countries: Count[]
+	initialFilters?: EventFilters
+}) {
+	const [source, setSource] = useState(
+		initialFilters.category || initialFilters.webProbes ? "web" : initialFilters.sshAttempts ? "ssh" : "",
+	)
+	const [kind, setKind] = useState(initialFilters.category || initialFilters.webProbes ? "web_probe" : "")
 	return (
 		<div className="min-w-0">
 			<div className="mb-3 flex flex-wrap gap-2">
@@ -587,6 +760,7 @@ function AllEvents({ system, range, countries }: { system: string; range: DateRa
 				source={source}
 				fixedKind={kind}
 				anchor="events"
+				initialFilters={initialFilters}
 				countries={countries}
 				title="Recent events"
 			/>
@@ -603,6 +777,7 @@ function EventTable({
 	title,
 	total,
 	countries,
+	initialFilters = {},
 }: {
 	system: string
 	range: DateRange
@@ -612,19 +787,34 @@ function EventTable({
 	title: string
 	total?: number
 	countries: Count[]
+	initialFilters?: EventFilters
 }) {
 	const [events, setEvents] = useState<SecurityEvent[]>([])
 	const [next, setNext] = useState("")
 	const [page, setPage] = useState(0)
 	const [cursors, setCursors] = useState([""])
 	const [pageSize, setPageSize] = useState("10")
-	const [search, setSearch] = useState("")
-	const [query, setQuery] = useState("")
+	const [search, setSearch] = useState(initialFilters.search || "")
+	const [query, setQuery] = useState(initialFilters.search || "")
 	const [country, setCountry] = useState("")
+	const [ipStatus, setIPStatus] = useState("")
+	const [authMethod, setAuthMethod] = useState("")
+	const [category, setCategory] = useState(initialFilters.category || "")
+	const [sshAttempts, setSSHAttempts] = useState(initialFilters.sshAttempts || false)
+	const filtered = !!(query || country || ipStatus || authMethod || category || sshAttempts)
 	useEffect(() => {
 		const timer = setTimeout(() => setQuery(search.trim()), 300)
 		return () => clearTimeout(timer)
 	}, [search])
+	useEffect(() => {
+		if ((source && source !== "ssh") || (fixedKind && !fixedKind.startsWith("ssh_"))) {
+			setIPStatus("")
+			setAuthMethod("")
+			setSSHAttempts(false)
+		}
+		if ((source && source !== "web") || (fixedKind && !fixedKind.startsWith("web_"))) setCategory("")
+		if (fixedKind && fixedKind !== "ssh_success") setIPStatus("")
+	}, [source, fixedKind])
 	const [loading, setLoading] = useState(true)
 	const [error, setError] = useState("")
 	const requestController = useRef<AbortController | null>(null)
@@ -644,6 +834,10 @@ function EventTable({
 				limit: pageSize,
 				q: query,
 				country,
+				ip_status: ipStatus,
+				auth_method: authMethod,
+				web_category: category,
+				ssh_attempts: sshAttempts ? "true" : "",
 			})
 			if (before) params.set("before", before)
 			const data = await pb.send<Events>(`/api/beszel/security/events?${params}`, {
@@ -672,7 +866,7 @@ function EventTable({
 		setCursors([""])
 		void load()
 		return () => controller.abort()
-	}, [system, range, source, fixedKind, query, pageSize, country])
+	}, [system, range, source, fixedKind, query, pageSize, country, ipStatus, authMethod, category, sshAttempts])
 	return (
 		<section
 			id={anchor || fixedKind}
@@ -681,7 +875,7 @@ function EventTable({
 		>
 			<div className="mb-4 flex items-center gap-3">
 				<h2 className="font-semibold">{title}</h2>
-				{total !== undefined && !query && !country && (
+				{total !== undefined && !filtered && (
 					<span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${kinds[fixedKind].badge}`}>
 						{formatNumber(total)} {total === 1 ? "event" : "events"}
 					</span>
@@ -714,6 +908,70 @@ function EventTable({
 					options={[10, 25, 50].map((size) => ({ value: String(size), label: `${size} rows` }))}
 				/>
 			</div>
+			<div className="mb-3 flex flex-wrap gap-2">
+				{(!source || source === "ssh") && (!fixedKind || fixedKind.startsWith("ssh_")) && (
+					<>
+						{(!fixedKind || fixedKind === "ssh_success") && (
+							<SecuritySelect
+								label="Login IP status"
+								value={ipStatus}
+								onValueChange={setIPStatus}
+								options={[
+									{ value: "", label: "All login IPs" },
+									{ value: "known", label: "Known IP" },
+									{ value: "unrecognized", label: "Unrecognized IP" },
+								]}
+							/>
+						)}
+						<SecuritySelect
+							label="Authentication method"
+							value={authMethod}
+							onValueChange={setAuthMethod}
+							options={[
+								{ value: "", label: "All auth methods" },
+								{ value: "publickey", label: "SSH key" },
+								{ value: "password", label: "Password" },
+								{ value: "keyboard-interactive", label: "Keyboard interactive" },
+								{ value: "unavailable", label: "Unavailable" },
+							]}
+						/>
+					</>
+				)}
+				{(!source || source === "web") && (!fixedKind || fixedKind.startsWith("web_")) && (
+					<SecuritySelect
+						label="Web probe category"
+						value={category}
+						onValueChange={setCategory}
+						options={[
+							{ value: "", label: "All probe categories" },
+							...Object.entries(webCategories).map(([value, label]) => ({ value, label })),
+						]}
+					/>
+				)}
+				{sshAttempts && (
+					<Button variant="outline" size="sm" onClick={() => setSSHAttempts(false)}>
+						SSH attempts only: clear
+					</Button>
+				)}
+				{filtered && (
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={() => {
+							setSearch("")
+							setQuery("")
+							setCountry("")
+							setIPStatus("")
+							setAuthMethod("")
+							setCategory("")
+							setSSHAttempts(false)
+						}}
+					>
+						Clear table filters
+					</Button>
+				)}
+			</div>
+
 			<div
 				aria-busy={loading}
 				className={`max-h-[50dvh] overflow-auto rounded-lg border ${loading && events.length ? "opacity-60" : ""}`}
@@ -759,6 +1017,32 @@ function EventTable({
 										: event.source === "web"
 											? `${event.method || "HTTP"} ${event.path || "Path not recorded"}`
 											: `Destination port: ${event.port || "Not recorded"}`}
+									{event.kind === "ssh_success" && (
+										<div className="mt-1 space-y-1">
+											<p
+												className={
+													event.ip_status === "known"
+														? "text-emerald-600 dark:text-emerald-300"
+														: "text-amber-600 dark:text-amber-300"
+												}
+											>
+												{event.ip_status === "known"
+													? `Known IP${event.known_ip_label ? `: ${event.known_ip_label}` : ""}`
+													: "Unrecognized IP"}
+											</p>
+											<p className="text-muted-foreground">{authMethodLabel(event.method)}</p>
+											{!!event.prior_failures_24h && (
+												<p className="text-amber-600 dark:text-amber-300">
+													{formatNumber(event.prior_failures_24h)} failures from this IP in the preceding 24 hours
+												</p>
+											)}
+										</div>
+									)}
+									{event.web_category && (
+										<p className="mt-1 text-violet-600 dark:text-violet-300">
+											{webCategories[event.web_category] || event.web_category}
+										</p>
+									)}
 								</td>
 								<td className="min-w-40 px-4 py-3 text-xs">
 									<details>
@@ -802,9 +1086,7 @@ function EventTable({
 						: events.length
 							? `Rows ${page * Number(pageSize) + 1} to ${page * Number(pageSize) + events.length}`
 							: "0 rows"}
-					{total !== undefined && !query && !country
-						? ` of ${formatNumber(total)} ${total === 1 ? "event" : "events"}`
-						: ""}
+					{total !== undefined && !filtered ? ` of ${formatNumber(total)} ${total === 1 ? "event" : "events"}` : ""}
 				</span>
 				<div className="flex items-center gap-2">
 					<Button

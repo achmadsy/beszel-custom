@@ -270,3 +270,39 @@ The dialog has Recent events, SSH success, and SSH failure tabs. Only the active
 Choose 10, 25, or 50 rows per page and use Previous or Next. Cursor pagination keeps page height bounded. Rows appear newest first. Country names remain visible. Expand **View details** for the original activity explanation, IP provenance, and any SSH command illustration. Closing the dialog returns to the dashboard. Changing the VPS, date range, tab, search, filters, or page size resets table pagination.
 
 API clients can pass `country=US` (a two-letter country code), `country=LOCAL`, or `country=UNKNOWN` to the events endpoint. Omitting `country` includes all countries. Country codes are case insensitive. Country, search, source, event type, and date filters are applied before cursor pagination.
+
+
+## Collector health and security insights
+
+The status strip shows the last successful collection and the oldest/newest stored event. **Collector healthy** means collection succeeded, even when no new events were found. **Collection in progress** means the collector is running. **Data delayed** means collection has not succeeded for more than five minutes, or a running collection has exceeded that time without a recent success. **Collection failed** shows a safe error type; inspect `journalctl -u beszel-security.service` for details. **Refresh status** reloads the summary without running commands on the VPS.
+
+Remote databases report the collection time recorded in the delivered snapshot. A delayed snapshot can therefore indicate either a collector issue or a database delivery issue. The newest event is not used as a collector heartbeat. An older database without collection metadata displays **Collector status unavailable** until its collector is upgraded.
+
+Select **Known IPs** to add, edit, or remove IP addresses and CIDR ranges for the selected VPS. Optional labels identify connections such as your home network. Save the list to apply it. Up to 100 entries are supported, with labels up to 80 characters. Settings are stored in the hub database, remain separate per VPS, and are included in hub backups. Only admins can manage them. They label history and do not change SSH or firewall access. Successful SSH key authentication does not automatically make an IP known.
+
+SSH success rows show **Known IP** or **Unrecognized IP**, the authentication method, and the number of failed authentications from that same IP in the preceding 24 hours. The count uses stored history, including events before the displayed date range. These labels are observations, not confirmation of a compromised account. Older events without an authentication method display **Unavailable**. Login IP status and authentication method filters combine with the existing date, country, source, event type, and search filters before pagination.
+
+Open **Show insights** for attempted usernames, unique source IP counts, SSH attempt sources, web probe categories, and commonly probed paths. SSH rankings include failed logins and probes, excluding successful logins. Select a chart bar or its text shortcut to open the Event explorer with the corresponding search or category filter. These additional charts are collapsed by default.
+
+Web categories are **Traversal or injection**, **Sensitive files**, **WordPress**, **PHP tooling**, **Admin panels**, and **Other probes**. Classification checks these patterns in that order, including URL-decoded paths, before removing query strings. Categories describe request patterns and do not confirm that an exploit succeeded. Normal application traffic can match a pattern. The Recent events table has a category filter. Query strings and fragments are not stored, and path segments containing 20 or more consecutive letters, digits, underscores, or hyphens are replaced with `[id]`.
+
+### Upgrade for these insights
+
+1. Build the updated custom hub image using the commands above. The hub adds its known IP settings table automatically at startup.
+2. Copy the updated `collector.py` and `countries.py` to `/opt/beszel-security/` on every monitored VPS, preserving the existing ownership and permissions.
+3. Run `sudo systemctl start beszel-security.service`. The first collection adds metadata, category fields, and indexes, then classifies and sanitizes stored web paths. The migration can take longer than a normal collection. Existing event IDs and history are retained.
+4. If you want authentication methods for older SSH events, run `sudo -u beszel-audit python3 /opt/beszel-security/collector.py --backfill` while the service is idle. It uses the existing collector lock and prints import progress. Methods can only be recovered while their original logs still exist. Events with the same source ID are updated without creating duplicate rows.
+5. For remote VPSes, deliver a fresh SQLite snapshot to the hub using the existing database delivery procedure. Open the security page and check the collector status.
+
+Existing web events are classified from their stored paths. Query strings removed during earlier collection cannot be recovered from the database. A backfill can classify retained source logs, but missing logs cannot be reconstructed. Sanitized paths are grouped under their displayed form; long identifiers are intentionally combined.
+
+Additional events API parameters:
+
+| Parameter | Values | Behavior |
+| --- | --- | --- |
+| `ip_status` | `known`, `unrecognized` | Filters successful SSH logins using the selected VPS's current known IP list |
+| `auth_method` | `publickey`, `password`, `keyboard-interactive`, `unavailable` | Filters SSH events; keyboard interactive includes PAM |
+| `web_category` | `sensitive_files`, `wordpress`, `php_tooling`, `admin_panels`, `traversal_injection`, `other_probes` | Filters categorized web probes |
+| `ssh_attempts` | `true` | Includes only SSH failure and SSH probe events |
+
+The summary API adds `collector`, `top_usernames` (with `unique_ips`), `top_ssh_ips`, `web_categories`, and `top_web_paths`. Event responses add `web_category`, `ip_status`, `known_ip_label`, and `prior_failures_24h`. Existing fields and cursor pagination remain available. `GET /api/beszel/security/known-ips?system=SYSTEM_ID` returns `{ "items": [{ "network": "203.0.113.10/32", "label": "Home" }] }`. Send the same shape with `PUT` to replace that VPS's list, or an empty `items` array to clear it. Networks are normalized to CIDR notation. Both routes require an authenticated admin.

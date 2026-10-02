@@ -188,6 +188,8 @@ func (h *Hub) registerApiRoutes(se *core.ServeEvent) error {
 	apiAuth.GET("/heartbeat-status", h.getHeartbeatStatus).BindFunc(requireAdminRole)
 	apiAuth.GET("/security/summary", h.getSecuritySummary).BindFunc(requireAdminRole)
 	apiAuth.GET("/security/events", h.getSecurityEvents).BindFunc(requireAdminRole)
+	apiAuth.GET("/security/known-ips", h.getSecurityKnownIPs).BindFunc(requireAdminRole)
+	apiAuth.PUT("/security/known-ips", h.putSecurityKnownIPs).BindFunc(requireAdminRole)
 	apiAuth.POST("/test-heartbeat", h.testHeartbeat).BindFunc(requireAdminRole)
 	// get config.yml content
 	apiAuth.GET("/config-yaml", config.GetYamlConfig).BindFunc(requireAdminRole)

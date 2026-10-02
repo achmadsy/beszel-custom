@@ -12,6 +12,8 @@ import re
 import sqlite3
 import subprocess
 import urllib.request
+import urllib.parse
+import time
 from pathlib import Path
 from countries import enrich as enrich_countries
 
@@ -24,14 +26,37 @@ if RETENTION_DAYS < 0:
     raise ValueError("SECURITY_RETENTION_DAYS must be zero or positive")
 CUTOFF = NOW - dt.timedelta(days=RETENTION_DAYS) if RETENTION_DAYS else None
 BACKFILL = False
-SSH_SUCCESS = re.compile(r"Accepted (?:publickey|password|keyboard-interactive(?:/pam)?) for (\S+) from ([0-9a-fA-F:.]+) port (\d+)")
-SSH_FAIL = re.compile(r"Failed (?:password|publickey|keyboard-interactive(?:/pam)?) for (?:invalid user )?(\S+) from ([0-9a-fA-F:.]+) port (\d+)")
+SSH_SUCCESS = re.compile(r"Accepted (publickey|password|keyboard-interactive(?:/pam)?) for (\S+) from ([0-9a-fA-F:.]+) port (\d+)")
+SSH_FAIL = re.compile(r"Failed (password|publickey|keyboard-interactive(?:/pam)?) for (?:invalid user )?(\S+) from ([0-9a-fA-F:.]+) port (\d+)")
 SSH_INVALID = re.compile(r"Invalid user (\S+) from ([0-9a-fA-F:.]+)")
 SSH_PROBE = re.compile(r"(?:Connection closed by|Disconnected from|Unable to negotiate with) (?:invalid user \S+ )?([0-9a-fA-F:.]+) port (\d+)")
 UFW = re.compile(r"\[UFW BLOCK\].*?SRC=([0-9a-fA-F:.]+)")
 UFW_PORT = re.compile(r"\bDPT=(\d+)")
 COMBINED = re.compile(r'^(\S+) \S+ \S+ \[([^]]+)\] "([A-Z]+) ([^ ]+) [^\"]+" (\d{3}) ')
 PROBE = re.compile(r"(?:^|/)(?:\.env|\.git|wp-admin|wp-login|phpmyadmin|actuator|cgi-bin)(?:/|$)|(?:\.php$)", re.I)
+
+
+WEB_CATEGORIES = [
+    ("traversal_injection", re.compile(r"(?i)(\.\./|/etc/passwd|\$\{jndi|(?:cmd|exec)=|exec\(|union.+select|<script)")),
+    ("sensitive_files", re.compile(r"(?i)(/\.(?:env|git|aws|ssh|svn)|credentials|id_rsa|config\.(?:json|ya?ml|php|js)|\.(?:sql|bak|old|backup|zip|tar|tgz|7z)(?:$|[?/])|/backup)")),
+    ("wordpress", re.compile(r"(?i)(wp-login|wp-admin|xmlrpc\.php|wp-content|wp-includes|wp-config|wlwmanifest)")),
+    ("php_tooling", re.compile(r"(?i)(phpmyadmin|/pma(?:/|$)|phpunit|eval-stdin|\.php(?:$|[?/]))")),
+    ("admin_panels", re.compile(r"(?i)(^/admin|/manager/|/boaform|/hnap1|/cgi-bin|/gponform|/actuator|/console|/solr|/owa/|/ecp/|/remote/login|/geoserver|/jenkins|/druid|/telescope|/vendor/)")),
+]
+
+
+def web_category(raw):
+    decoded = urllib.parse.unquote(urllib.parse.unquote(str(raw or "")))
+    for category, pattern in WEB_CATEGORIES:
+        if pattern.search(decoded):
+            return category
+    return "other_probes" if PROBE.search(decoded.split("?", 1)[0]) else ""
+
+
+def safe_path(raw):
+    path = str(raw or "").split("?", 1)[0].split("#", 1)[0]
+    path = re.sub(r"[\x00-\x1f\x7f]", "", path)
+    return re.sub(r"[A-Za-z0-9_-]{20,}", "[id]", path)[:400]
 
 
 def clean_ip(value):
@@ -53,6 +78,25 @@ def init(db):
     db.execute("CREATE INDEX IF NOT EXISTS events_kind_time ON events(kind, occurred_at DESC)")
     db.execute("CREATE TABLE IF NOT EXISTS ip_countries (ip TEXT PRIMARY KEY, country_code TEXT NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS cursors (source TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(events)")}
+    if "web_category" not in columns:
+        db.execute("ALTER TABLE events ADD COLUMN web_category TEXT")
+    db.execute("CREATE INDEX IF NOT EXISTS events_ssh_ip_time ON events(COALESCE(NULLIF(client_ip,''),peer_ip), kind, occurred_at) WHERE source='ssh'")
+    db.execute("CREATE INDEX IF NOT EXISTS events_web_category_time ON events(web_category, occurred_at DESC) WHERE web_category IS NOT NULL")
+    db.execute("CREATE TABLE IF NOT EXISTS collector_state (id INTEGER PRIMARY KEY CHECK(id=1), started_at INTEGER, finished_at INTEGER, last_success_at INTEGER, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '')")
+    if not cursor(db, "analysis:v1"):
+        after = 0
+        while True:
+            rows = db.execute("SELECT id,path,kind FROM events WHERE source='web' AND id>? ORDER BY id LIMIT 1000", (after,)).fetchall()
+            if not rows:
+                break
+            for event_id, path, kind in rows:
+                category = web_category(path) or ("other_probes" if kind == "web_probe" else "")
+                db.execute("UPDATE events SET path=?,web_category=?,kind=? WHERE id=?", (safe_path(path), category or None, "web_probe" if category else kind, event_id))
+            after = rows[-1][0]
+            db.commit()
+        set_cursor(db, "analysis:v1", "1")
+
 
 
 def cursor(db, key):
@@ -64,23 +108,23 @@ def set_cursor(db, key, value):
     db.execute("INSERT INTO cursors VALUES (?, ?) ON CONFLICT(source) DO UPDATE SET value=excluded.value", (key, str(value)))
 
 
-def add(db, source_id, when, source, kind, peer=None, client=None, provenance="direct", host=None, username=None, method=None, path=None, port=None, status=None):
+def add(db, source_id, when, source, kind, peer=None, client=None, provenance="direct", host=None, username=None, method=None, path=None, port=None, status=None, category=None):
     if (CUTOFF and when < int(CUTOFF.timestamp())) or when > int((NOW + dt.timedelta(minutes=5)).timestamp()):
         return
-    db.execute("INSERT OR IGNORE INTO events(source_id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (source_id, when, source, kind, peer, client, provenance, clean_text(host, 150) or None, clean_text(username, 100) or None, clean_text(method, 16) or None, clean_text(path, 400) or None, port, status))
+    db.execute("INSERT INTO events(source_id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status,web_category) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET method=COALESCE(excluded.method,events.method),web_category=COALESCE(excluded.web_category,events.web_category),kind=CASE WHEN excluded.source='web' AND excluded.web_category IS NOT NULL THEN 'web_probe' ELSE events.kind END", (source_id, when, source, kind, peer, client, provenance, clean_text(host, 150) or None, clean_text(username, 100) or None, clean_text(method, 32) or None, (safe_path(path) if source == "web" else clean_text(path, 400)) or None, port, status, category))
 
 
 def add_message(db, name, source_id, when, message):
     if name == "ssh":
         match = SSH_SUCCESS.search(message)
         if match:
-            user, ip, port = match.groups()
-            add(db, source_id, when, "ssh", "ssh_success", clean_ip(ip), clean_ip(ip), username=user, port=int(port))
+            method, user, ip, port = match.groups()
+            add(db, source_id, when, "ssh", "ssh_success", clean_ip(ip), clean_ip(ip), username=user, method=method, port=int(port))
             return
         match = SSH_FAIL.search(message)
         if match:
-            user, ip, port = match.groups()
-            add(db, source_id, when, "ssh", "ssh_failure", clean_ip(ip), clean_ip(ip), username=user, port=int(port))
+            method, user, ip, port = match.groups()
+            add(db, source_id, when, "ssh", "ssh_failure", clean_ip(ip), clean_ip(ip), username=user, method=method, port=int(port))
             return
         match = SSH_INVALID.search(message)
         if match:
@@ -159,12 +203,13 @@ def add_web_record(db, line, ranges, fallback_id):
         asserted = clean_ip(record.get("cf_ip", ""))
         trusted = bool(peer and asserted and any(ipaddress.ip_address(peer) in network for network in ranges))
         client = asserted if trusted else peer
-        path = record.get("path", "").split("?", 1)[0]
-        kind = "web_probe" if PROBE.search(path) else "web_request"
+        category = web_category(record.get("path", ""))
+        path = safe_path(record.get("path", ""))
+        kind = "web_probe" if category else "web_request"
         source_id = "nginx:" + clean_text(record.get("request_id"), 100)
         if source_id == "nginx:":
             source_id = fallback_id
-        add(db, source_id, when, "web", kind, peer, client, "cloudflare_validated" if trusted else "direct_peer", record.get("host"), method=record.get("method"), path=path, status=int(record.get("status", 0)))
+        add(db, source_id, when, "web", kind, peer, client, "cloudflare_validated" if trusted else "direct_peer", record.get("host"), method=record.get("method"), path=path, status=int(record.get("status", 0)), category=category or None)
     except (ValueError, TypeError, KeyError, json.JSONDecodeError):
         pass
 
@@ -225,11 +270,15 @@ def historic_web(db):
                         when = int(dt.datetime.strptime(timestamp, "%d/%b/%Y:%H:%M:%S %z").timestamp())
                     except ValueError:
                         continue
-                    path = path.split("?", 1)[0]
-                    if db.execute("SELECT 1 FROM events WHERE occurred_at=? AND source='web' AND peer_ip IS ? AND method=? AND path=? AND status=? LIMIT 1", (when, clean_ip(ip), method, path, int(status))).fetchone():
+                    category = web_category(path)
+                    path = safe_path(path)
+                    existing = db.execute("SELECT id FROM events WHERE occurred_at=? AND source='web' AND peer_ip IS ? AND method=? AND path=? AND status=? LIMIT 1", (when, clean_ip(ip), method, path, int(status))).fetchone()
+                    if existing:
+                        if category:
+                            db.execute("UPDATE events SET web_category=?,kind='web_probe' WHERE id=?", (category, existing[0]))
                         continue
                     event_id = hashlib.sha256(f"{file.name}:{number}:{line}".encode()).hexdigest()
-                    add(db, "historic:" + event_id, when, "web", "web_probe" if PROBE.search(path) else "web_request", clean_ip(ip), None, "legacy_unknown", method=method, path=path, status=int(status))
+                    add(db, "historic:" + event_id, when, "web", "web_probe" if category else "web_request", clean_ip(ip), None, "legacy_unknown", method=method, path=path, status=int(status), category=category or None)
         except OSError:
             continue
     set_cursor(db, "historical:v2", "1")
@@ -277,6 +326,11 @@ def historic_system(db):
                         before = db.total_changes
                         add_message(db, name, source_id, when, line)
                         if db.total_changes != before:
+                            # A retained text log can enrich an older journal event even
+                            # when its own duplicate row is removed below.
+                            imported = db.execute("SELECT id,method,occurred_at,source,kind,peer_ip,username,port FROM events WHERE source_id=? AND source='ssh'", (source_id,)).fetchone()
+                            if imported and imported[1]:
+                                db.execute("UPDATE events SET method=? WHERE id!=? AND occurred_at=? AND source=? AND kind=? AND peer_ip IS ? AND username IS ? AND port IS ? AND COALESCE(method,'')=''", (imported[1], imported[0], *imported[2:]))
                             db.execute("DELETE FROM events WHERE source_id=? AND EXISTS (SELECT 1 FROM events AS other WHERE other.id != events.id AND other.occurred_at=events.occurred_at AND other.source=events.source AND other.kind=events.kind AND other.peer_ip IS events.peer_ip AND other.username IS events.username AND other.port IS events.port)", (source_id,))
             except OSError as error:
                 print(f"Could not read {file.name}: {error.strerror}", flush=True)
@@ -318,17 +372,29 @@ def main():
 def collect():
     with sqlite3.connect(DB, timeout=30) as db:
         init(db)
-        journal(db, "ssh", ["_COMM=sshd"])
-        journal(db, "ufw", ["_TRANSPORT=kernel"])
-        web(db, cf_ranges(db))
-        historic_system(db)
-        historic_web(db)
-        enrich_countries(db, DB.parent)
-        if CUTOFF:
-            db.execute("DELETE FROM events WHERE occurred_at < ?", (int(CUTOFF.timestamp()),))
+        started = int(time.time())
+        db.execute("INSERT INTO collector_state(id,started_at,status,error) VALUES (1,?,'running','') ON CONFLICT(id) DO UPDATE SET started_at=excluded.started_at,finished_at=NULL,status='running',error=''", (started,))
         db.commit()
-        count, oldest, newest = db.execute("SELECT COUNT(*), MIN(occurred_at), MAX(occurred_at) FROM events").fetchone()
-        print(f"Collection complete: {count:,} events. Timestamp coverage: {oldest} to {newest}.", flush=True)
+        try:
+            journal(db, "ssh", ["_COMM=sshd"])
+            journal(db, "ufw", ["_TRANSPORT=kernel"])
+            web(db, cf_ranges(db))
+            historic_system(db)
+            historic_web(db)
+            enrich_countries(db, DB.parent)
+            if CUTOFF:
+                db.execute("DELETE FROM events WHERE occurred_at < ?", (int(CUTOFF.timestamp()),))
+            finished = int(time.time())
+            db.execute("UPDATE collector_state SET finished_at=?,last_success_at=?,status='success',error='' WHERE id=1", (finished, finished))
+            db.commit()
+            count, oldest, newest = db.execute("SELECT COUNT(*), MIN(occurred_at), MAX(occurred_at) FROM events").fetchone()
+            print(f"Collection complete: {count:,} events. Timestamp coverage: {oldest} to {newest}.", flush=True)
+        except Exception as error:
+            db.rollback()
+            # Log details stay in the host journal; the dashboard gets a safe error type.
+            db.execute("UPDATE collector_state SET finished_at=?,status='failed',error=? WHERE id=1", (int(time.time()), type(error).__name__))
+            db.commit()
+            raise
 
 
 if __name__ == "__main__":
