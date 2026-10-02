@@ -365,14 +365,6 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 					color="#0ea5e9"
 				/>
 				<Ranking
-					title="Countries"
-					description="Top 10 estimated sender IP countries across recorded events"
-					rows={(summary.countries || [])
-						.slice(0, 10)
-						.map((row) => ({ ...row, key: `${countryFlag(row.key)} ${countryName(row.key)}`.trim() }))}
-					color="#10b981"
-				/>
-				<Ranking
 					title="Most blocked ports"
 					description="Destination ports blocked by the firewall"
 					rows={summary.top_ports}
@@ -415,6 +407,12 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 					</div>
 				</section>
 			</div>
+			<Ranking
+				title="Countries"
+				description="Top 10 estimated sender IP countries across recorded events"
+				rows={(summary.countries || []).slice(0, 10).map((row) => ({ ...row, key: countryName(row.key) }))}
+				color="#10b981"
+			/>
 			<EventTable system={system} range={range} fixedKind="ssh_success" title="SSH success" total={successes} />
 			<EventTable system={system} range={range} fixedKind="ssh_failure" title="SSH failure" total={failures} />
 			<AllEvents system={system} range={range} />
