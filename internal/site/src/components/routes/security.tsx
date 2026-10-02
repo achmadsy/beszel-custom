@@ -1,9 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useStore } from "@nanostores/react"
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, Tooltip, XAxis, YAxis } from "recharts"
+import {
+	Area,
+	AreaChart,
+	Bar,
+	BarChart,
+	CartesianGrid,
+	Cell,
+	Pie,
+	PieChart,
+	Tooltip,
+	XAxis,
+	YAxis,
+	type TooltipProps,
+} from "recharts"
 import { ArrowDown, ShieldCheck, Server } from "lucide-react"
 import { pb } from "@/lib/api"
 import { $systems } from "@/lib/stores"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Button } from "@/components/ui/button"
 import { ChartContainer } from "@/components/ui/chart"
 import { Link, navigate, prependBasePath } from "@/components/router"
 
@@ -66,12 +81,10 @@ const kinds: Record<string, { label: string; color: string; badge: string }> = {
 		badge: "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300",
 	},
 }
-const panel =
-	"min-w-0 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900/70"
-const select = "rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900"
+const panel = "min-w-0 rounded-xl border bg-card p-5 shadow-sm"
 const formatNumber = (n: number) => n.toLocaleString()
 const tooltipStyle = {
-	background: "var(--background)",
+	background: "var(--muted)",
 	color: "var(--foreground)",
 	border: "1px solid var(--border)",
 	borderRadius: 10,
@@ -83,7 +96,7 @@ export default function Security({ id }: { id?: string }) {
 	const system = systems.find((item) => item.id === id)
 	return (
 		<div className="grid min-w-0 gap-5 pb-12">
-			<header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-sky-200 bg-sky-50 p-5 dark:border-sky-900 dark:bg-sky-950/40">
+			<header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card p-5">
 				<div className="flex items-center gap-3">
 					<ShieldCheck className="size-9 text-sky-600 dark:text-sky-400" />
 					<div>
@@ -94,29 +107,25 @@ export default function Security({ id }: { id?: string }) {
 					</div>
 				</div>
 				<div className="flex flex-wrap gap-2">
-					<select
-						aria-label="Pilih VPS"
-						className={select}
+					<SecuritySelect
+						label="Pilih VPS"
 						value={id || ""}
-						onChange={(e) => navigate(prependBasePath(`/security/${e.target.value}`))}
-					>
-						<option value="">Pilih VPS</option>
-						{systems.map((item) => (
-							<option key={item.id} value={item.id}>
-								{item.name}
-							</option>
-						))}
-					</select>
-					<select
-						aria-label="Rentang waktu"
-						className={select}
+						onValueChange={(value) => navigate(prependBasePath(`/security/${value}`))}
+						options={[
+							{ value: "", label: "Pilih VPS" },
+							...systems.map((item) => ({ value: item.id, label: item.name })),
+						]}
+					/>
+					<SecuritySelect
+						label="Rentang waktu"
 						value={range}
-						onChange={(e) => setRange(e.target.value as Range)}
-					>
-						<option value="24h">24 jam</option>
-						<option value="7d">7 hari</option>
-						<option value="30d">30 hari</option>
-					</select>
+						onValueChange={(value) => setRange(value as Range)}
+						options={[
+							{ value: "24h", label: "24 jam" },
+							{ value: "7d", label: "7 hari" },
+							{ value: "30d", label: "30 hari" },
+						]}
+					/>
 				</div>
 			</header>
 			{id ? (
@@ -129,7 +138,7 @@ export default function Security({ id }: { id?: string }) {
 							<Link
 								key={item.id}
 								href={prependBasePath(`/security/${item.id}`)}
-								className="flex items-center gap-3 rounded-lg border border-sky-200 bg-sky-50 p-4 hover:bg-sky-100 dark:border-sky-900 dark:bg-sky-950/40 dark:hover:bg-sky-900/40"
+								className="flex items-center gap-3 rounded-lg border bg-card p-4 hover:bg-accent"
 							>
 								<Server className="size-5 text-sky-500" />
 								{item.name}
@@ -217,8 +226,7 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 						key={card.name}
 						href={`#${card.target}`}
 						onClick={() => jump(card.target)}
-						className={`${panel} group border-t-4 transition-shadow hover:shadow-md`}
-						style={{ borderTopColor: card.color }}
+						className={`${panel} group transition-shadow hover:shadow-md`}
 					>
 						<div className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
 							{card.label}
@@ -242,16 +250,16 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 								{range === "30d" ? "Per hari" : "Per jam"} · waktu lokal · arahkan kursor untuk detail
 							</p>
 						</div>
-						<select
-							aria-label="Seri grafik"
-							className={select}
+						<SecuritySelect
+							label="Seri grafik"
 							value={chartMode}
-							onChange={(e) => setChartMode(e.target.value)}
-						>
-							<option value="security">Event keamanan</option>
-							<option value="ssh">SSH saja</option>
-							<option value="all">Semua event + web</option>
-						</select>
+							onValueChange={setChartMode}
+							options={[
+								{ value: "security", label: "Event keamanan" },
+								{ value: "ssh", label: "SSH saja" },
+								{ value: "all", label: "Semua event + web" },
+							]}
+						/>
 					</div>
 					<ChartContainer className="h-72 w-full">
 						<AreaChart data={data} margin={{ top: 12, right: 12, left: 0, bottom: 4 }} accessibilityLayer>
@@ -268,6 +276,8 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 							<YAxis allowDecimals={false} width={48} tickLine={false} axisLine={false} />
 							<Tooltip
 								contentStyle={tooltipStyle}
+								labelStyle={{ color: "var(--foreground)" }}
+								itemStyle={{ color: "var(--foreground)" }}
 								labelFormatter={(value) => new Date(Number(value) * 1000).toLocaleString()}
 								formatter={(value, name) => [formatNumber(Number(value)), kinds[String(name)]?.label || name]}
 							/>
@@ -307,16 +317,15 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 									innerRadius="55%"
 									outerRadius="80%"
 									paddingAngle={2}
+									stroke="var(--card)"
+									activeShape={{ stroke: "var(--foreground)", strokeWidth: 2, fillOpacity: 1 }}
 									isAnimationActive={false}
 								>
 									{summary.kinds.map((row) => (
 										<Cell key={row.key} fill={kinds[row.key]?.color || "#64748b"} />
 									))}
 								</Pie>
-								<Tooltip
-									contentStyle={tooltipStyle}
-									formatter={(value, name) => [formatNumber(Number(value)), kinds[String(name)]?.label || name]}
-								/>
+								<Tooltip cursor={false} content={<SecurityPieTooltip />} />
 							</PieChart>
 						</ChartContainer>
 					) : (
@@ -353,7 +362,7 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 					<p className="mb-4 text-sm text-muted-foreground">
 						Login berhasil dari {formatNumber(successes + failures)} percobaan autentikasi
 					</p>
-					<div className="flex h-3 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800" aria-hidden="true">
+					<div className="flex h-3 overflow-hidden rounded-full bg-muted" aria-hidden="true">
 						<div
 							className="bg-emerald-500"
 							style={{ width: `${(successes / Math.max(1, successes + failures)) * 100}%` }}
@@ -425,6 +434,8 @@ function Ranking({
 						/>
 						<Tooltip
 							contentStyle={tooltipStyle}
+							labelStyle={{ color: "var(--foreground)" }}
+							itemStyle={{ color: "var(--foreground)" }}
 							formatter={(value) => [formatNumber(Number(value)), "Event"]}
 							cursor={{ fill: "var(--muted)" }}
 						/>
@@ -444,30 +455,31 @@ function AllEvents({ system, range }: { system: string; range: Range }) {
 	return (
 		<div className="min-w-0">
 			<div className="mb-3 flex flex-wrap gap-2">
-				<select
-					aria-label="Sumber event"
-					className={select}
+				<SecuritySelect
+					label="Sumber event"
 					value={source}
-					onChange={(e) => {
-						setSource(e.target.value)
+					onValueChange={(value) => {
+						setSource(value)
 						setKind("")
 					}}
-				>
-					<option value="">Semua sumber</option>
-					<option value="ssh">SSH</option>
-					<option value="firewall">Firewall</option>
-					<option value="web">Web</option>
-				</select>
-				<select aria-label="Jenis event" className={select} value={kind} onChange={(e) => setKind(e.target.value)}>
-					<option value="">Semua jenis</option>
-					{Object.entries(kinds)
-						.filter(([key]) => !source || key.startsWith(`${source}_`))
-						.map(([key, item]) => (
-							<option key={key} value={key}>
-								{item.label}
-							</option>
-						))}
-				</select>
+					options={[
+						{ value: "", label: "Semua sumber" },
+						{ value: "ssh", label: "SSH" },
+						{ value: "firewall", label: "Firewall" },
+						{ value: "web", label: "Web" },
+					]}
+				/>
+				<SecuritySelect
+					label="Jenis event"
+					value={kind}
+					onValueChange={setKind}
+					options={[
+						{ value: "", label: "Semua jenis" },
+						...Object.entries(kinds)
+							.filter(([key]) => !source || key.startsWith(`${source}_`))
+							.map(([value, item]) => ({ value, label: item.label })),
+					]}
+				/>
 			</div>
 			<EventTable
 				key={`${source}:${kind}`}
@@ -535,7 +547,7 @@ function EventTable({
 		<section
 			id={anchor || fixedKind}
 			tabIndex={-1}
-			className={`${panel} scroll-mt-6 focus-visible:outline-2 focus-visible:outline-sky-500`}
+			className={`${panel} scroll-mt-6 focus-visible:outline-2 focus-visible:outline-ring`}
 		>
 			<div className="mb-4 flex items-center gap-3">
 				<h2 className="font-semibold">{title}</h2>
@@ -554,10 +566,10 @@ function EventTable({
 					</button>
 				</div>
 			)}
-			<div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+			<div className="overflow-x-auto rounded-lg border">
 				<table className="w-full text-left text-sm">
 					<caption className="sr-only">{title} untuk VPS ini</caption>
-					<thead className="bg-sky-50 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+					<thead className="bg-muted/60 text-foreground">
 						<tr>
 							{["Waktu", "Jenis", "IP", ssh ? "Pengguna" : "Detail", ssh ? "Port klien" : "Asal IP"].map((name) => (
 								<th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold" key={name}>
@@ -568,16 +580,13 @@ function EventTable({
 					</thead>
 					<tbody>
 						{events.map((event) => (
-							<tr
-								key={event.id}
-								className="border-t border-slate-200 bg-white even:bg-slate-50 hover:bg-sky-50 dark:border-slate-700 dark:bg-slate-900 dark:even:bg-slate-800/50 dark:hover:bg-slate-800"
-							>
+							<tr key={event.id} className="border-t bg-card even:bg-muted/25 hover:bg-muted/60">
 								<td className="whitespace-nowrap px-4 py-3 tabular-nums">
 									{new Date(event.at * 1000).toLocaleString()}
 								</td>
 								<td className="whitespace-nowrap px-4 py-3">
 									<span
-										className={`rounded-full px-2.5 py-1 text-xs font-medium ${kinds[event.kind]?.badge || "bg-slate-100 text-slate-800"}`}
+										className={`rounded-full px-2.5 py-1 text-xs font-medium ${kinds[event.kind]?.badge || "bg-muted text-foreground"}`}
 									>
 										{kinds[event.kind]?.label || event.kind}
 									</span>
@@ -614,14 +623,52 @@ function EventTable({
 				)}
 			</div>
 			{next && (
-				<button
-					className="mt-4 rounded-lg border border-sky-300 bg-sky-50 px-4 py-2 text-sm text-sky-800 disabled:opacity-50 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200"
-					disabled={loading}
-					onClick={() => load(next)}
-				>
+				<Button variant="outline" className="mt-4" disabled={loading} onClick={() => load(next)}>
 					{loading ? "Memuat…" : "Muat lagi"}
-				</button>
+				</Button>
 			)}
 		</section>
+	)
+}
+
+function SecuritySelect({
+	label,
+	value,
+	onValueChange,
+	options,
+}: {
+	label: string
+	value: string
+	onValueChange: (value: string) => void
+	options: { value: string; label: string }[]
+}) {
+	return (
+		<Select value={value || "__all"} onValueChange={(next) => onValueChange(next === "__all" ? "" : next)}>
+			<SelectTrigger aria-label={label} className="w-auto max-w-full min-w-28 gap-3">
+				<SelectValue />
+			</SelectTrigger>
+			<SelectContent>
+				{options.map((option) => (
+					<SelectItem key={option.value || "__all"} value={option.value || "__all"}>
+						{option.label}
+					</SelectItem>
+				))}
+			</SelectContent>
+		</Select>
+	)
+}
+
+function SecurityPieTooltip({ active, payload }: TooltipProps<number, string>) {
+	if (!active || !payload?.length) return null
+	const item = payload[0]
+	const kind = kinds[String(item.name)]
+	return (
+		<div className="rounded-lg border bg-muted px-3 py-2 text-sm text-foreground shadow-md">
+			<div className="flex items-center gap-2">
+				<span className="size-2.5 rounded-full" style={{ background: kind?.color || item.color }} />
+				<span>{kind?.label || item.name}</span>
+				<span className="ml-3 font-semibold tabular-nums">{formatNumber(Number(item.value))}</span>
+			</div>
+		</div>
 	)
 }

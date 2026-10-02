@@ -1,6 +1,6 @@
 # Beszel Custom
 
-This fork adds security history per VPS, interactive event charts, and dedicated SSH success/failure tables. See [security setup and build instructions](security/README.md).
+This fork adds security history per VPS, interactive event charts, and dedicated SSH success/failure tables. See the [step-by-step security installation guide](security/README.md#supported-quick-start), including data sources, collector setup, Nginx logging, and multiple VPSes. Security collection currently requires a separate collector and database mapping; it is not automatically installed by the standard Beszel agent.
 
 
 Beszel is a lightweight server monitoring platform that includes Docker statistics, historical data, and alert functions.
