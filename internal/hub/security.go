@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pocketbase/pocketbase/core"
 	_ "modernc.org/sqlite"
@@ -260,7 +261,17 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 		args = append(args, kind)
 	}
 	query += " ORDER BY occurred_at DESC, id DESC LIMIT ?"
-	args = append(args, limit)
+	search := strings.TrimSpace(q.Get("q"))
+	if utf8.RuneCountInString(search) > 200 {
+		return e.BadRequestError("search must be 200 characters or fewer", nil)
+	}
+	if search != "" {
+		query = strings.TrimSuffix(query, " ORDER BY occurred_at DESC, id DESC LIMIT ?")
+		query += " AND (peer_ip LIKE ? ESCAPE '\\' OR client_ip LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\') ORDER BY occurred_at DESC, id DESC LIMIT ?"
+		pattern := "%" + strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(search) + "%"
+		args = append(args, pattern, pattern, pattern, pattern)
+	}
+	args = append(args, limit+1)
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return e.InternalServerError("Failed to query security history", err)
@@ -289,7 +300,8 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 		return e.InternalServerError("Failed to query security history", err)
 	}
 	next := ""
-	if len(items) == limit {
+	if len(items) > limit {
+		items = items[:limit]
 		last := items[len(items)-1]
 		next = fmt.Sprintf("%d:%d", last["at"].(int64), last["id"].(int64))
 	}

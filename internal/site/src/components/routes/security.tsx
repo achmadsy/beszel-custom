@@ -25,6 +25,10 @@ import {
 	rangeParams,
 	type SecurityDateRange as DateRange,
 } from "./security-date-picker"
+import { Input } from "@/components/ui/input"
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { SecurityCountryMap } from "./security-country-map"
 import { Button } from "@/components/ui/button"
 import { ChartContainer } from "@/components/ui/chart"
 import { Link, navigate, prependBasePath } from "@/components/router"
@@ -162,6 +166,8 @@ export default function Security({ id }: { id?: string }) {
 function SecurityView({ system, range }: { system: string; range: DateRange }) {
 	const [summary, setSummary] = useState<Summary | null>(null)
 	const [error, setError] = useState("")
+	const [eventsOpen, setEventsOpen] = useState(false)
+	const [eventTab, setEventTab] = useState("events")
 	const [chartMode, setChartMode] = useState("security")
 	useEffect(() => {
 		const controller = new AbortController()
@@ -218,7 +224,10 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 					? { hour: "2-digit", minute: "2-digit" }
 					: { day: "numeric", month: "short", hour: "2-digit" },
 		)
-	const jump = (target: string) => document.getElementById(target)?.focus({ preventScroll: true })
+	const jump = (target: string) => {
+		setEventTab(target)
+		setEventsOpen(true)
+	}
 	return (
 		<>
 			<div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -232,11 +241,11 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 						color: kinds[name].color,
 					})),
 				].map((card) => (
-					<a
+					<button
 						key={card.name}
-						href={`#${card.target}`}
+						type="button"
 						onClick={() => jump(card.target)}
-						className={`${panel} group transition-shadow hover:shadow-md`}
+						className={`${panel} text-left group transition-shadow hover:shadow-md`}
 					>
 						<div className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
 							{card.label}
@@ -248,7 +257,7 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 						<span className="text-xs text-muted-foreground group-hover:underline">
 							View {card.name === "total" || card.name === "firewall_block" ? "events" : card.label.toLowerCase()} table
 						</span>
-					</a>
+					</button>
 				))}
 			</div>
 			<div className="grid gap-4 lg:grid-cols-3">
@@ -390,32 +399,80 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 						/>
 					</div>
 					<div className="mt-4 flex flex-wrap gap-3 text-sm">
-						<a
+						<button
 							className="text-emerald-700 underline dark:text-emerald-300"
-							href="#ssh_success"
+							type="button"
 							onClick={() => jump("ssh_success")}
 						>
 							Success: {formatNumber(successes)} ↓
-						</a>
-						<a
+						</button>
+						<button
 							className="text-rose-700 underline dark:text-rose-300"
-							href="#ssh_failure"
+							type="button"
 							onClick={() => jump("ssh_failure")}
 						>
 							Failure: {formatNumber(failures)} ↓
-						</a>
+						</button>
 					</div>
 				</section>
 			</div>
-			<Ranking
-				title="Countries"
-				description="Top 10 estimated sender IP countries across recorded events"
-				rows={(summary.countries || []).slice(0, 10).map((row) => ({ ...row, key: countryName(row.key) }))}
-				color="#10b981"
-			/>
-			<EventTable system={system} range={range} fixedKind="ssh_success" title="SSH success" total={successes} />
-			<EventTable system={system} range={range} fixedKind="ssh_failure" title="SSH failure" total={failures} />
-			<AllEvents system={system} range={range} />
+			<SecurityCountryMap rows={summary.countries || []} />
+			<section className={`${panel} flex flex-wrap items-center justify-between gap-3`}>
+				<div>
+					<h2 className="font-semibold">Event explorer</h2>
+					<p className="text-xs text-muted-foreground">Search and inspect recorded activity.</p>
+				</div>
+				<div className="flex flex-wrap gap-2">
+					<Button variant="outline" size="sm" onClick={() => jump("ssh_success")}>
+						SSH success
+					</Button>
+					<Button variant="outline" size="sm" onClick={() => jump("ssh_failure")}>
+						SSH failure
+					</Button>
+					<Button size="sm" onClick={() => jump("events")}>
+						Browse events
+					</Button>
+				</div>
+			</section>
+			<Dialog open={eventsOpen} onOpenChange={setEventsOpen}>
+				<DialogContent
+					className="flex h-[88dvh] w-[calc(100%-2rem)] max-w-7xl flex-col gap-3 overflow-hidden rounded-lg p-4 sm:p-6"
+					onOpenAutoFocus={(event) => {
+						event.preventDefault()
+						requestAnimationFrame(() => document.querySelector<HTMLInputElement>("[data-security-search]")?.focus())
+					}}
+				>
+					<DialogTitle>Event explorer</DialogTitle>
+					<DialogDescription>Events for the VPS and date range selected on the dashboard.</DialogDescription>
+					<Tabs value={eventTab} onValueChange={setEventTab} className="flex min-h-0 min-w-0 flex-1 flex-col">
+						<TabsList aria-label="Event tables" className="grid w-full shrink-0 grid-cols-3">
+							<TabsTrigger value="events" className="px-1 text-xs sm:text-sm">
+								Recent events
+							</TabsTrigger>
+							<TabsTrigger value="ssh_success" className="gap-1 px-1 text-xs sm:text-sm">
+								SSH success{" "}
+								<span className="hidden text-emerald-600 dark:text-emerald-400 sm:inline">
+									{formatNumber(successes)}
+								</span>
+							</TabsTrigger>
+							<TabsTrigger value="ssh_failure" className="gap-1 px-1 text-xs sm:text-sm">
+								SSH failure{" "}
+								<span className="hidden text-rose-600 dark:text-rose-400 sm:inline">{formatNumber(failures)}</span>
+							</TabsTrigger>
+						</TabsList>
+						<TabsContent value="events" className="min-h-0 flex-1 overflow-y-auto">
+							<AllEvents system={system} range={range} />
+						</TabsContent>
+						<TabsContent value="ssh_success" className="min-h-0 flex-1 overflow-y-auto">
+							<EventTable system={system} range={range} fixedKind="ssh_success" title="SSH success" total={successes} />
+						</TabsContent>
+						<TabsContent value="ssh_failure" className="min-h-0 flex-1 overflow-y-auto">
+							<EventTable system={system} range={range} fixedKind="ssh_failure" title="SSH failure" total={failures} />
+						</TabsContent>
+					</Tabs>
+				</DialogContent>
+			</Dialog>
+
 			<p className="text-xs text-muted-foreground">
 				All time shows every stored event. Retention is configured on the collector. Probe labels identify suspicious
 				patterns and do not confirm a compromise. UFW logging may be rate limited. Visitor IP addresses in older web
@@ -541,22 +598,46 @@ function EventTable({
 }) {
 	const [events, setEvents] = useState<SecurityEvent[]>([])
 	const [next, setNext] = useState("")
+	const [page, setPage] = useState(0)
+	const [cursors, setCursors] = useState([""])
+	const [pageSize, setPageSize] = useState("10")
+	const [search, setSearch] = useState("")
+	const [query, setQuery] = useState("")
+	useEffect(() => {
+		const timer = setTimeout(() => setQuery(search.trim()), 300)
+		return () => clearTimeout(timer)
+	}, [search])
 	const [loading, setLoading] = useState(true)
 	const [error, setError] = useState("")
 	const requestController = useRef<AbortController | null>(null)
-	async function load(before = "") {
+	const lastRequest = useRef({ before: "", page: 0 })
+	async function load(before = "", targetPage = 0) {
 		const controller = requestController.current
 		if (!controller) return
+		lastRequest.current = { before, page: targetPage }
 		setLoading(true)
 		setError("")
 		try {
-			const params = new URLSearchParams({ system, ...rangeParams(range), source, kind: fixedKind, limit: "25" })
+			const params = new URLSearchParams({
+				system,
+				...rangeParams(range),
+				source,
+				kind: fixedKind,
+				limit: pageSize,
+				q: query,
+			})
 			if (before) params.set("before", before)
 			const data = await pb.send<Events>(`/api/beszel/security/events?${params}`, {
 				signal: controller.signal,
 			})
 			if (controller.signal.aborted) return
-			setEvents((old) => (before ? [...old, ...data.items] : data.items))
+			setEvents(data.items)
+			setPage(targetPage)
+			setCursors((old) => {
+				const updated = old.slice(0, targetPage + 1)
+				updated[targetPage] = before
+				return updated
+			})
 			setNext(data.next_before)
 		} catch (err) {
 			if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "Could not load events")
@@ -567,20 +648,23 @@ function EventTable({
 	useEffect(() => {
 		const controller = new AbortController()
 		requestController.current = controller
+		setEvents([])
+		setPage(0)
+		setCursors([""])
 		void load()
 		return () => controller.abort()
-	}, [system, range, source, fixedKind])
+	}, [system, range, source, fixedKind, query, pageSize])
 	return (
 		<section
 			id={anchor || fixedKind}
 			tabIndex={-1}
-			className={`${panel} scroll-mt-6 focus-visible:outline-2 focus-visible:outline-ring`}
+			className="min-w-0 focus-visible:outline-2 focus-visible:outline-ring"
 		>
 			<div className="mb-4 flex items-center gap-3">
 				<h2 className="font-semibold">{title}</h2>
 				{total !== undefined && (
 					<span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${kinds[fixedKind].badge}`}>
-						{formatNumber(total)} event
+						{formatNumber(total)} {total === 1 ? "event" : "events"}
 					</span>
 				)}
 				<span className="ml-auto text-xs text-muted-foreground">Newest first</span>
@@ -588,21 +672,37 @@ function EventTable({
 			{error && (
 				<div role="alert" className="mb-3 text-sm text-rose-600 dark:text-rose-300">
 					{error}
-					<button className="ml-3 underline" onClick={() => load(events.length ? next : "")}>
+					<button className="ml-3 underline" onClick={() => load(lastRequest.current.before, lastRequest.current.page)}>
 						Retry
 					</button>
 				</div>
 			)}
-			<p className="mb-3 text-xs text-muted-foreground">
-				The source port belongs to the sender. It does not identify the VPS SSH port. SSH command examples are
-				illustrations. The original client command is not recorded.
-			</p>
-			<div className="overflow-x-auto rounded-lg border">
+			<div className="mb-3 flex flex-wrap items-center gap-2">
+				<Input
+					data-security-search
+					aria-label="Search events"
+					maxLength={200}
+					placeholder="Search IP, username, or path"
+					value={search}
+					onChange={(event) => setSearch(event.target.value)}
+					className="h-9 min-w-40 flex-1"
+				/>
+				<SecuritySelect
+					label="Rows per page"
+					value={pageSize}
+					onValueChange={setPageSize}
+					options={[10, 25, 50].map((size) => ({ value: String(size), label: `${size} rows` }))}
+				/>
+			</div>
+			<div
+				aria-busy={loading}
+				className={`max-h-[50dvh] overflow-auto rounded-lg border ${loading && events.length ? "opacity-60" : ""}`}
+			>
 				<table className="w-full text-left text-sm">
 					<caption className="sr-only">{title} for this VPS</caption>
-					<thead className="bg-muted/60 text-foreground">
+					<thead className="sticky top-0 z-10 bg-muted text-foreground">
 						<tr>
-							{["Time", "Type", "Sender IP", "Country", "Activity details", "IP address source"].map((name) => (
+							{["Time", "Type", "Sender IP", "Country", "Activity", "Details"].map((name) => (
 								<th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold" key={name}>
 									{name}
 								</th>
@@ -631,17 +731,32 @@ function EventTable({
 								>
 									<span aria-hidden="true">{countryFlag(event.country_code)}</span> {countryName(event.country_code)}
 								</td>
-								<td className="min-w-72 max-w-md px-4 py-3 align-top text-xs leading-relaxed">
-									<SecurityEventDetail event={event} />
+								<td className="min-w-48 max-w-72 px-4 py-3 text-xs">
+									{event.source === "ssh"
+										? event.username
+											? `User: ${event.username}`
+											: "Username not recorded"
+										: event.source === "web"
+											? `${event.method || "HTTP"} ${event.path || "Path not recorded"}`
+											: `Destination port: ${event.port || "Not recorded"}`}
 								</td>
-								<td className="min-w-48 max-w-64 px-4 py-3 align-top text-xs leading-relaxed text-muted-foreground">
-									{event.provenance === "cloudflare_validated"
-										? "Visitor IP reported by Cloudflare. The proxy address was verified."
-										: event.provenance === "legacy_unknown"
-											? "IP from an older web log. The original visitor address cannot be verified."
-											: event.provenance === "direct_peer"
-												? "Connection IP recorded by Nginx. The original visitor address has not been verified."
-												: "Source IP recorded directly by the VPS service."}
+								<td className="min-w-40 px-4 py-3 text-xs">
+									<details>
+										<summary className="cursor-pointer whitespace-nowrap text-muted-foreground">View details</summary>
+										<div className="mt-2 w-72 max-w-[70vw] space-y-3 leading-relaxed">
+											<SecurityEventDetail event={event} />
+											<p className="text-muted-foreground">
+												IP address source:{" "}
+												{event.provenance === "cloudflare_validated"
+													? "Visitor IP reported by Cloudflare. The proxy address was verified."
+													: event.provenance === "legacy_unknown"
+														? "IP from an older web log. The original visitor address cannot be verified."
+														: event.provenance === "direct_peer"
+															? "Connection IP recorded by Nginx. The original visitor address has not been verified."
+															: "Source IP recorded directly by the VPS service."}
+											</p>
+										</div>
+									</details>
 								</td>
 							</tr>
 						))}
@@ -657,11 +772,33 @@ function EventTable({
 					</p>
 				)}
 			</div>
-			{next && (
-				<Button variant="outline" className="mt-4" disabled={loading} onClick={() => load(next)}>
-					{loading ? "Loading..." : "Load more"}
-				</Button>
-			)}
+			<div
+				className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"
+				aria-live="polite"
+			>
+				<span>
+					{loading
+						? "Loading events..."
+						: events.length
+							? `Rows ${page * Number(pageSize) + 1} to ${page * Number(pageSize) + events.length}`
+							: "0 rows"}
+					{total !== undefined && !query ? ` of ${formatNumber(total)} {total === 1 ? "event" : "events"}s` : ""}
+				</span>
+				<div className="flex items-center gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={loading || page === 0}
+						onClick={() => load(cursors[page - 1], page - 1)}
+					>
+						Previous
+					</Button>
+					<span>Page {page + 1}</span>
+					<Button variant="outline" size="sm" disabled={loading || !next} onClick={() => load(next, page + 1)}>
+						Next
+					</Button>
+				</div>
+			</div>
 		</section>
 	)
 }

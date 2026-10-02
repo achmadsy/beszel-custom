@@ -251,7 +251,7 @@ The **IP address source** column explains whether an address came directly from 
 
 ## IP countries
 
-The country chart shows the ten countries with the most recorded events in the selected VPS and date range. Every event table includes a country name and flag for its displayed sender IP. Unknown and non-public addresses have explicit labels. Country counts include all event types, including normal web requests.
+The country chart is an interactive world map for the selected VPS and date range. Country colors use a logarithmic scale based on event counts. Hover, tap, choose a country, or focus the map and use arrow keys to inspect its count and share of all events. Gray countries have no recorded events. Unknown and non-public IP countries are counted separately. The bundled public domain geometry comes from [Natural Earth](https://www.naturalearthdata.com/). Small territories omitted from the map remain available through the country selector. Viewing the map needs no external map service or API key. Every event table includes a country name and flag for its displayed sender IP. Unknown and non-public addresses have explicit labels. Country counts include all event types, including normal web requests.
 
 The collector downloads IPv4 and IPv6 country ranges from [IPtoASN](https://iptoasn.com/) and performs lookups locally. It sends no event IPs to a lookup API. The compressed databases are cached next to `events.db` and refreshed weekly. Compact binary caches provide local lookups without parsing the complete datasets on each collection. New IPs are enriched on the next collector run. Existing events are enriched automatically, so another historical log import is not required. Country mappings use the current database rather than the assignment at the time of the event.
 
@@ -260,3 +260,11 @@ No API key or extra Python package is required. The first run needs outbound HTT
 Country labels estimate an IP's country. They do not establish a person's location, nationality, or identity. A VPN, proxy, or hosting server can determine the displayed country. Verified Cloudflare visitor addresses take priority over peer addresses. Older unverified web logs can identify a proxy's country instead. Older collector databases continue to work without country enrichment, showing Unknown until the collector is upgraded.
 
 To upgrade an existing installation, copy both `collector.py` and `countries.py` using step 2, then run `sudo systemctl start beszel-security.service`. Check its journal for country download or lookup progress.
+
+## Event explorer
+
+The dashboard displays charts and a compact Event explorer toolbar. Use **Browse events**, **SSH success**, or **SSH failure** to open the data table dialog. The summary cards and SSH authentication links open the corresponding tab directly.
+
+The dialog has Recent events, SSH success, and SSH failure tabs. Only the active table is loaded. Search by sender IP, username, or request path. Search applies to the complete selected VPS and date range, rather than only the visible page. Recent events also has source and event type filters.
+
+Choose 10, 25, or 50 rows per page and use Previous or Next. Cursor pagination keeps page height bounded. Rows appear newest first. Country names remain visible. Expand **View details** for the original activity explanation, IP provenance, and any SSH command illustration. Closing the dialog returns to the dashboard. Changing the VPS, date range, tab, search, filters, or page size resets table pagination.

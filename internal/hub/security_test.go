@@ -174,6 +174,15 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 		if i == 1 && items[0]["country_code"] != "" {
 			t.Fatal("older collector country fallback failed")
 		}
+		lastPage, err := request(fmt.Sprintf("system=%s&limit=%d", id, i+2), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lastCursor string
+		json.Unmarshal(lastPage["next_before"], &lastCursor)
+		if lastCursor != "" {
+			t.Fatal("exactly full final page offered an empty next page")
+		}
 		var cursor string
 		json.Unmarshal(result["next_before"], &cursor)
 		next, err := request("system="+id+"&limit=1&before="+url.QueryEscape(cursor), false)
@@ -184,6 +193,28 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 		json.Unmarshal(next["items"], &more)
 		if len(more) != 1 || more[0]["id"] == items[0]["id"] {
 			t.Fatal("cursor repeated an event")
+		}
+	}
+	for _, search := range []string{"8.8.8", ids[0]} {
+		found, err := request("system="+ids[0]+"&q="+url.QueryEscape(search), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var matches []map[string]any
+		json.Unmarshal(found["items"], &matches)
+		if len(matches) != 2 {
+			t.Fatalf("search failed for %s: %s", search, found["items"])
+		}
+	}
+	for _, search := range []string{"%", "_", "' OR 1=1 --"} {
+		found, err := request("system="+ids[0]+"&q="+url.QueryEscape(search), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var matches []map[string]any
+		json.Unmarshal(found["items"], &matches)
+		if len(matches) != 0 {
+			t.Fatalf("search did not treat input literally: %s", found["items"])
 		}
 	}
 	// Verify the lower bound is included and the upper bound is excluded by both handlers.
