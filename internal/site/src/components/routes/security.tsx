@@ -16,8 +16,10 @@ import {
 } from "recharts"
 import { ArrowDown, ShieldCheck, Server } from "lucide-react"
 import { pb } from "@/lib/api"
+import { SecurityEventDetail } from "./security-event-detail"
 import { $systems } from "@/lib/stores"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { ChartContainer } from "@/components/ui/chart"
 import { Link, navigate, prependBasePath } from "@/components/router"
@@ -48,15 +50,23 @@ type SecurityEvent = {
 	status: number
 }
 type Events = { items: SecurityEvent[]; next_before: string }
-type Range = "24h" | "7d" | "30d"
+type DateRange = { from: string; to: string }
+function dateKey(date: Date) {
+	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+}
+function rangeParams(range: DateRange) {
+	const end = new Date(`${range.to}T00:00:00`)
+	end.setDate(end.getDate() + 1)
+	return { from: String(new Date(`${range.from}T00:00:00`).getTime() / 1000), to: String(end.getTime() / 1000) }
+}
 const kinds: Record<string, { label: string; color: string; badge: string }> = {
 	ssh_success: {
-		label: "SSH berhasil",
+		label: "SSH success",
 		color: "#10b981",
 		badge: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
 	},
 	ssh_failure: {
-		label: "SSH gagal",
+		label: "SSH failure",
 		color: "#f43f5e",
 		badge: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
 	},
@@ -66,7 +76,7 @@ const kinds: Record<string, { label: string; color: string; badge: string }> = {
 		badge: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
 	},
 	firewall_block: {
-		label: "Firewall blok",
+		label: "Firewall blocks",
 		color: "#8b5cf6",
 		badge: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
 	},
@@ -82,7 +92,7 @@ const kinds: Record<string, { label: string; color: string; badge: string }> = {
 	},
 }
 const panel = "min-w-0 rounded-xl border bg-card p-5 shadow-sm"
-const formatNumber = (n: number) => n.toLocaleString()
+const formatNumber = (n: number) => n.toLocaleString("en")
 const tooltipStyle = {
 	background: "var(--muted)",
 	color: "var(--foreground)",
@@ -92,7 +102,11 @@ const tooltipStyle = {
 
 export default function Security({ id }: { id?: string }) {
 	const systems = useStore($systems)
-	const [range, setRange] = useState<Range>("24h")
+	const today = dateKey(new Date())
+	const earliest = new Date()
+	earliest.setDate(earliest.getDate() - 30)
+	const minDate = dateKey(earliest)
+	const [range, setRange] = useState<DateRange>(() => ({ from: today, to: today }))
 	const system = systems.find((item) => item.id === id)
 	return (
 		<div className="grid min-w-0 gap-5 pb-12">
@@ -100,39 +114,64 @@ export default function Security({ id }: { id?: string }) {
 				<div className="flex items-center gap-3">
 					<ShieldCheck className="size-9 text-sky-600 dark:text-sky-400" />
 					<div>
-						<h1 className="text-2xl font-semibold">Riwayat Keamanan{system ? ` · ${system.name}` : " VPS"}</h1>
+						<h1 className="text-2xl font-semibold">Security history{system ? `: ${system.name}` : " VPS"}</h1>
 						<p className="mt-1 text-sm text-muted-foreground">
-							SSH, firewall, dan web · riwayat per VPS · khusus admin
+							SSH, firewall, and web history for each VPS. Admin access required.
 						</p>
 					</div>
 				</div>
 				<div className="flex flex-wrap gap-2">
 					<SecuritySelect
-						label="Pilih VPS"
+						label="Choose VPS"
 						value={id || ""}
 						onValueChange={(value) => navigate(prependBasePath(`/security/${value}`))}
 						options={[
-							{ value: "", label: "Pilih VPS" },
+							{ value: "", label: "Choose VPS" },
 							...systems.map((item) => ({ value: item.id, label: item.name })),
 						]}
 					/>
-					<SecuritySelect
-						label="Rentang waktu"
-						value={range}
-						onValueChange={(value) => setRange(value as Range)}
-						options={[
-							{ value: "24h", label: "24 jam" },
-							{ value: "7d", label: "7 hari" },
-							{ value: "30d", label: "30 hari" },
-						]}
-					/>
+					<div className="flex max-w-full flex-wrap items-end gap-2 rounded-lg border bg-background p-2">
+						<label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+							From
+							<Input
+								aria-label="Start date"
+								type="date"
+								className="w-40 max-w-full"
+								value={range.from}
+								min={minDate}
+								max={range.to}
+								onChange={(e) => {
+									const value = e.target.value
+									if (value && value >= minDate && value <= range.to) setRange((old) => ({ ...old, from: value }))
+								}}
+							/>
+						</label>
+						<label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+							To
+							<Input
+								aria-label="End date"
+								type="date"
+								className="w-40 max-w-full"
+								value={range.to}
+								min={range.from}
+								max={today}
+								onChange={(e) => {
+									const value = e.target.value
+									if (value && value >= range.from && value <= today) setRange((old) => ({ ...old, to: value }))
+								}}
+							/>
+						</label>
+						<p className="w-full text-xs text-muted-foreground">
+							Local dates. Both dates included. History retained for 30 days.
+						</p>
+					</div>
 				</div>
 			</header>
 			{id ? (
-				<SecurityView key={`${id}:${range}`} system={id} range={range} />
+				<SecurityView key={`${id}:${range.from}:${range.to}`} system={id} range={range} />
 			) : (
 				<div className={panel}>
-					<h2 className="mb-2 font-semibold">Pilih VPS untuk melihat riwayatnya</h2>
+					<h2 className="mb-2 font-semibold">Choose a VPS to view its history</h2>
 					<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
 						{systems.map((item) => (
 							<Link
@@ -151,25 +190,25 @@ export default function Security({ id }: { id?: string }) {
 	)
 }
 
-function SecurityView({ system, range }: { system: string; range: Range }) {
+function SecurityView({ system, range }: { system: string; range: DateRange }) {
 	const [summary, setSummary] = useState<Summary | null>(null)
 	const [error, setError] = useState("")
 	const [chartMode, setChartMode] = useState("security")
 	useEffect(() => {
 		const controller = new AbortController()
-		pb.send<Summary>(`/api/beszel/security/summary?${new URLSearchParams({ system, range })}`, {
+		pb.send<Summary>(`/api/beszel/security/summary?${new URLSearchParams({ system, ...rangeParams(range) })}`, {
 			signal: controller.signal,
 		})
 			.then(setSummary)
 			.catch((err) => {
-				if (!controller.signal.aborted) setError(err.message || "Gagal mengambil riwayat")
+				if (!controller.signal.aborted) setError(err.message || "Could not load security history")
 			})
 		return () => controller.abort()
 	}, [system, range])
 	const data = useMemo(() => {
 		if (!summary) return []
 		const rows = new Map<number, Record<string, number>>()
-		for (let at = Math.floor(summary.since / summary.step) * summary.step; at <= summary.until; at += summary.step) {
+		for (let at = summary.since; at < Math.min(summary.until, Date.now() / 1000); at += summary.step) {
 			rows.set(at, { at, ...Object.fromEntries(Object.keys(kinds).map((key) => [key, 0])) })
 		}
 		for (const row of summary.series) {
@@ -185,13 +224,13 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 				className="rounded-xl border border-amber-300 bg-amber-50 p-5 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
 			>
 				{error}
-				<p className="mt-2 text-sm">Pastikan kolektor dan database security sudah dikonfigurasi untuk VPS ini.</p>
+				<p className="mt-2 text-sm">Check the collector and database configuration for this VPS.</p>
 			</div>
 		)
 	if (!summary)
 		return (
 			<div role="status" className={`${panel} animate-pulse`}>
-				Memuat riwayat VPS…
+				Loading VPS history...
 			</div>
 		)
 	const total = summary.kinds.reduce((sum, row) => sum + row.count, 0)
@@ -203,17 +242,19 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 	)
 	const timeLabel = (at: number) =>
 		new Date(at * 1000).toLocaleString(
-			undefined,
-			range === "24h"
-				? { hour: "2-digit", minute: "2-digit" }
-				: { day: "numeric", month: "short", ...(range === "7d" ? { hour: "2-digit" } : {}) },
+			"en",
+			summary.step === 86400
+				? { day: "numeric", month: "short" }
+				: range.from === range.to
+					? { hour: "2-digit", minute: "2-digit" }
+					: { day: "numeric", month: "short", hour: "2-digit" },
 		)
 	const jump = (target: string) => document.getElementById(target)?.focus({ preventScroll: true })
 	return (
 		<>
 			<div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
 				{[
-					{ name: "total", label: "Total event", count: total, target: "events", color: "#0ea5e9" },
+					{ name: "total", label: "Total events", count: total, target: "events", color: "#0ea5e9" },
 					...["ssh_success", "ssh_failure", "firewall_block"].map((name) => ({
 						name,
 						label: kinds[name].label,
@@ -236,7 +277,7 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 							{formatNumber(card.count)}
 						</div>
 						<span className="text-xs text-muted-foreground group-hover:underline">
-							Lihat tabel {card.name === "total" || card.name === "firewall_block" ? "event" : card.label.toLowerCase()}
+							View {card.name === "total" || card.name === "firewall_block" ? "events" : card.label.toLowerCase()} table
 						</span>
 					</a>
 				))}
@@ -245,19 +286,19 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 				<section className={`${panel} lg:col-span-2`}>
 					<div className="mb-4 flex flex-wrap justify-between gap-3">
 						<div>
-							<h2 className="font-semibold">Aktivitas dari waktu ke waktu</h2>
+							<h2 className="font-semibold">Activity over time</h2>
 							<p className="text-xs text-muted-foreground">
-								{range === "30d" ? "Per hari" : "Per jam"} · waktu lokal · arahkan kursor untuk detail
+								{summary.step === 86400 ? "Daily totals" : "Hourly totals"}. Times are local. Hover for details.
 							</p>
 						</div>
 						<SecuritySelect
-							label="Seri grafik"
+							label="Chart view"
 							value={chartMode}
 							onValueChange={setChartMode}
 							options={[
-								{ value: "security", label: "Event keamanan" },
-								{ value: "ssh", label: "SSH saja" },
-								{ value: "all", label: "Semua event + web" },
+								{ value: "security", label: "Security events" },
+								{ value: "ssh", label: "SSH only" },
+								{ value: "all", label: "All events, including web traffic" },
 							]}
 						/>
 					</div>
@@ -278,7 +319,7 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 								contentStyle={tooltipStyle}
 								labelStyle={{ color: "var(--foreground)" }}
 								itemStyle={{ color: "var(--foreground)" }}
-								labelFormatter={(value) => new Date(Number(value) * 1000).toLocaleString()}
+								labelFormatter={(value) => new Date(Number(value) * 1000).toLocaleString("en")}
 								formatter={(value, name) => [formatNumber(Number(value)), kinds[String(name)]?.label || name]}
 							/>
 							{selectedKinds.map((key) => (
@@ -305,8 +346,8 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 					</div>
 				</section>
 				<section className={panel}>
-					<h2 className="font-semibold">Komposisi event</h2>
-					<p className="text-xs text-muted-foreground">Proporsi pada periode yang dipilih</p>
+					<h2 className="font-semibold">Event breakdown</h2>
+					<p className="text-xs text-muted-foreground">Share of events within the selected dates</p>
 					{total ? (
 						<ChartContainer className="h-52 w-full">
 							<PieChart accessibilityLayer>
@@ -329,7 +370,7 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 							</PieChart>
 						</ChartContainer>
 					) : (
-						<p className="py-12 text-sm text-muted-foreground">Belum ada event</p>
+						<p className="py-12 text-sm text-muted-foreground">No events recorded</p>
 					)}
 					<div className="space-y-2 text-sm">
 						{summary.kinds.map((row) => (
@@ -342,25 +383,25 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 					</div>
 				</section>
 				<Ranking
-					title="IP paling aktif"
-					description="SSH, probe web, dan firewall"
+					title="Most active IP addresses"
+					description="SSH, web probes, and firewall blocks"
 					rows={summary.top_ips}
 					color="#0ea5e9"
 				/>
 				<Ranking
-					title="Port paling sering diblok"
-					description="Tujuan koneksi yang diblok firewall"
+					title="Most blocked ports"
+					description="Destination ports blocked by the firewall"
 					rows={summary.top_ports}
 					color="#8b5cf6"
 				/>
 				<section className={panel}>
-					<h2 className="font-semibold">Autentikasi SSH</h2>
-					<p className="mt-1 text-xs text-muted-foreground">Hasil login pada periode ini</p>
+					<h2 className="font-semibold">SSH authentication</h2>
+					<p className="mt-1 text-xs text-muted-foreground">Login results within the selected dates</p>
 					<div className="my-5 text-4xl font-semibold text-emerald-600 dark:text-emerald-400">
-						{successes + failures ? `${((successes / (successes + failures)) * 100).toFixed(1)}%` : "—"}
+						{successes + failures ? `${((successes / (successes + failures)) * 100).toFixed(1)}%` : "No login attempts"}
 					</div>
 					<p className="mb-4 text-sm text-muted-foreground">
-						Login berhasil dari {formatNumber(successes + failures)} percobaan autentikasi
+						Success rate across {formatNumber(successes + failures)} authentication attempts
 					</p>
 					<div className="flex h-3 overflow-hidden rounded-full bg-muted" aria-hidden="true">
 						<div
@@ -378,24 +419,24 @@ function SecurityView({ system, range }: { system: string; range: Range }) {
 							href="#ssh_success"
 							onClick={() => jump("ssh_success")}
 						>
-							Berhasil: {formatNumber(successes)} ↓
+							Success: {formatNumber(successes)} ↓
 						</a>
 						<a
 							className="text-rose-700 underline dark:text-rose-300"
 							href="#ssh_failure"
 							onClick={() => jump("ssh_failure")}
 						>
-							Gagal: {formatNumber(failures)} ↓
+							Failure: {formatNumber(failures)} ↓
 						</a>
 					</div>
 				</section>
 			</div>
-			<EventTable system={system} range={range} fixedKind="ssh_success" title="SSH berhasil" total={successes} />
-			<EventTable system={system} range={range} fixedKind="ssh_failure" title="SSH gagal" total={failures} />
+			<EventTable system={system} range={range} fixedKind="ssh_success" title="SSH success" total={successes} />
+			<EventTable system={system} range={range} fixedKind="ssh_failure" title="SSH failure" total={failures} />
 			<AllEvents system={system} range={range} />
 			<p className="text-xs text-muted-foreground">
-				Riwayat tersimpan 30 hari. “Probe” adalah pola mencurigakan, bukan bukti kompromi. Log UFW dapat dibatasi rate
-				limit. IP pengunjung pada log web lama tidak dapat diverifikasi.
+				History is retained for 30 days. Probe labels identify suspicious patterns and do not confirm a compromise. UFW
+				logging may be rate limited. Visitor IP addresses in older web logs cannot be verified.
 			</p>
 		</>
 	)
@@ -443,38 +484,38 @@ function Ranking({
 					</BarChart>
 				</ChartContainer>
 			) : (
-				<p className="py-10 text-sm text-muted-foreground">Belum ada data</p>
+				<p className="py-10 text-sm text-muted-foreground">No data recorded</p>
 			)}
 		</section>
 	)
 }
 
-function AllEvents({ system, range }: { system: string; range: Range }) {
+function AllEvents({ system, range }: { system: string; range: DateRange }) {
 	const [source, setSource] = useState("")
 	const [kind, setKind] = useState("")
 	return (
 		<div className="min-w-0">
 			<div className="mb-3 flex flex-wrap gap-2">
 				<SecuritySelect
-					label="Sumber event"
+					label="Event source"
 					value={source}
 					onValueChange={(value) => {
 						setSource(value)
 						setKind("")
 					}}
 					options={[
-						{ value: "", label: "Semua sumber" },
+						{ value: "", label: "All sources" },
 						{ value: "ssh", label: "SSH" },
 						{ value: "firewall", label: "Firewall" },
 						{ value: "web", label: "Web" },
 					]}
 				/>
 				<SecuritySelect
-					label="Jenis event"
+					label="Event type"
 					value={kind}
 					onValueChange={setKind}
 					options={[
-						{ value: "", label: "Semua jenis" },
+						{ value: "", label: "All types" },
 						...Object.entries(kinds)
 							.filter(([key]) => !source || key.startsWith(`${source}_`))
 							.map(([value, item]) => ({ value, label: item.label })),
@@ -488,7 +529,7 @@ function AllEvents({ system, range }: { system: string; range: Range }) {
 				source={source}
 				fixedKind={kind}
 				anchor="events"
-				title="Event terbaru"
+				title="Recent events"
 			/>
 		</div>
 	)
@@ -504,7 +545,7 @@ function EventTable({
 	total,
 }: {
 	system: string
-	range: Range
+	range: DateRange
 	source?: string
 	fixedKind?: string
 	anchor?: string
@@ -522,7 +563,7 @@ function EventTable({
 		setLoading(true)
 		setError("")
 		try {
-			const params = new URLSearchParams({ system, range, source, kind: fixedKind, limit: "25" })
+			const params = new URLSearchParams({ system, ...rangeParams(range), source, kind: fixedKind, limit: "25" })
 			if (before) params.set("before", before)
 			const data = await pb.send<Events>(`/api/beszel/security/events?${params}`, {
 				signal: controller.signal,
@@ -531,7 +572,7 @@ function EventTable({
 			setEvents((old) => (before ? [...old, ...data.items] : data.items))
 			setNext(data.next_before)
 		} catch (err) {
-			if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "Gagal memuat event")
+			if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "Could not load events")
 		} finally {
 			if (!controller.signal.aborted) setLoading(false)
 		}
@@ -542,7 +583,6 @@ function EventTable({
 		void load()
 		return () => controller.abort()
 	}, [system, range, source, fixedKind])
-	const ssh = fixedKind === "ssh_success" || fixedKind === "ssh_failure"
 	return (
 		<section
 			id={anchor || fixedKind}
@@ -556,22 +596,26 @@ function EventTable({
 						{formatNumber(total)} event
 					</span>
 				)}
-				<span className="ml-auto text-xs text-muted-foreground">Terbaru lebih dulu</span>
+				<span className="ml-auto text-xs text-muted-foreground">Newest first</span>
 			</div>
 			{error && (
 				<div role="alert" className="mb-3 text-sm text-rose-600 dark:text-rose-300">
 					{error}
 					<button className="ml-3 underline" onClick={() => load(events.length ? next : "")}>
-						Coba lagi
+						Retry
 					</button>
 				</div>
 			)}
+			<p className="mb-3 text-xs text-muted-foreground">
+				The source port belongs to the sender. It does not identify the VPS SSH port. SSH command examples are
+				illustrations. The original client command is not recorded.
+			</p>
 			<div className="overflow-x-auto rounded-lg border">
 				<table className="w-full text-left text-sm">
-					<caption className="sr-only">{title} untuk VPS ini</caption>
+					<caption className="sr-only">{title} for this VPS</caption>
 					<thead className="bg-muted/60 text-foreground">
 						<tr>
-							{["Waktu", "Jenis", "IP", ssh ? "Pengguna" : "Detail", ssh ? "Port klien" : "Asal IP"].map((name) => (
+							{["Time", "Type", "Sender IP", "Activity details", "IP address source"].map((name) => (
 								<th scope="col" className="whitespace-nowrap px-4 py-3 font-semibold" key={name}>
 									{name}
 								</th>
@@ -580,9 +624,9 @@ function EventTable({
 					</thead>
 					<tbody>
 						{events.map((event) => (
-							<tr key={event.id} className="border-t bg-card even:bg-muted/25 hover:bg-muted/60">
+							<tr key={event.id} className="border-t bg-card even:bg-muted/25 hover:bg-muted/60 [&>td]:align-top">
 								<td className="whitespace-nowrap px-4 py-3 tabular-nums">
-									{new Date(event.at * 1000).toLocaleString()}
+									{new Date(event.at * 1000).toLocaleString("en")}
 								</td>
 								<td className="whitespace-nowrap px-4 py-3">
 									<span
@@ -592,25 +636,19 @@ function EventTable({
 									</span>
 								</td>
 								<td className="whitespace-nowrap px-4 py-3 font-mono text-xs">
-									{event.client_ip || event.peer_ip || "—"}
+									{event.client_ip || event.peer_ip || "Not recorded"}
 								</td>
-								<td className="min-w-40 max-w-md break-all px-4 py-3 font-mono text-xs">
-									{ssh
-										? event.username || "—"
-										: event.source === "web"
-											? `${event.method} ${event.host || ""}${event.path} → ${event.status}`
-											: event.source === "ssh"
-												? `${event.username || "—"} · port klien ${event.port || "—"}`
-												: `port tujuan ${event.port || "—"}`}
+								<td className="min-w-72 max-w-md px-4 py-3 align-top text-xs leading-relaxed">
+									<SecurityEventDetail event={event} />
 								</td>
-								<td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
-									{ssh
-										? event.port || "—"
-										: event.provenance === "cloudflare_validated"
-											? "Cloudflare tervalidasi"
-											: event.provenance === "legacy_unknown"
-												? "Log lama: tidak pasti"
-												: "Peer langsung"}
+								<td className="min-w-48 max-w-64 px-4 py-3 align-top text-xs leading-relaxed text-muted-foreground">
+									{event.provenance === "cloudflare_validated"
+										? "Visitor IP reported by Cloudflare. The proxy address was verified."
+										: event.provenance === "legacy_unknown"
+											? "IP from an older web log. The original visitor address cannot be verified."
+											: event.provenance === "direct_peer"
+												? "Connection IP recorded by Nginx. The original visitor address has not been verified."
+												: "Source IP recorded directly by the VPS service."}
 								</td>
 							</tr>
 						))}
@@ -618,13 +656,17 @@ function EventTable({
 				</table>
 				{!events.length && (
 					<p role="status" className="p-5 text-sm text-muted-foreground">
-						{loading ? "Memuat event…" : error ? "Data belum tersedia." : "Tidak ada event pada periode ini."}
+						{loading
+							? "Loading events..."
+							: error
+								? "Data is unavailable."
+								: "No events match these dates and filters."}
 					</p>
 				)}
 			</div>
 			{next && (
 				<Button variant="outline" className="mt-4" disabled={loading} onClick={() => load(next)}>
-					{loading ? "Memuat…" : "Muat lagi"}
+					{loading ? "Loading..." : "Load more"}
 				</Button>
 			)}
 		</section>

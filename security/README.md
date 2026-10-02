@@ -1,6 +1,6 @@
 # Security history per VPS
 
-This fork adds an admin-only security dashboard to Beszel: event charts, per-VPS history, and separate tables for successful and failed SSH logins. Cards, dropdowns, and tooltips use Beszel's theme; colors identify event types.
+This fork adds an admin-only security dashboard to Beszel: event charts, per-VPS history, and separate tables for successful and failed SSH logins. Cards, dropdowns, and tooltips use Beszel's theme. Colors identify event types.
 
 **Installation is not yet plug and play.** The normal Beszel agent still collects system metrics. Security history uses a separate Python collector on each VPS, plus a read-only database mount on the hub. These instructions build the custom Docker image locally. There is no bundled installer or automatic transfer of remote security databases.
 
@@ -19,7 +19,7 @@ The systemd timer runs the collector every minute. It stores sanitized events an
 
 The commands below target **Ubuntu/Debian with systemd, Docker Compose, and a rootful Docker daemon**. They collect SSH from `ssh.service`; another distribution using `sshd.service` needs the unit name adjusted in `collector.py`. Nginx is optional for web data. UFW block data requires UFW to be installed and logging enabled. Neither service is enabled or installed by this collector.
 
-For the simplest installation, run the hub and collector on the **same VPS**. For a remote monitored VPS, also follow the snapshot delivery section.
+Run the hub and collector on the **same VPS** for a local installation. For a remote monitored VPS, also follow the snapshot delivery section.
 
 ### 1. Clone and build the custom hub
 
@@ -139,7 +139,7 @@ This is a hub configuration fragment, not a full agent installation. Preserve yo
 docker compose up -d --no-deps beszel
 ```
 
-Log in as an admin and open **Riwayat Keamanan**, select your VPS, or open `/security/<id>` directly. A VPS without a database mapping shows a configuration message. Mapping one VPS does not enable history for other VPSes.
+Log in as an admin and open **Security history**, select your VPS, or open `/security/<id>` directly. A VPS without a database mapping shows a configuration message. Mapping one VPS does not enable history for other VPSes.
 
 The example uses rootful Docker because collector output is private to `beszel-audit` and the hub image runs as root. Rootless Docker or a custom hub UID needs an appropriate read-only ACL or group permission on the database directory and files; do not make them world-readable.
 
@@ -219,3 +219,15 @@ The hub opens security databases in SQLite read-only/query-only mode and validat
 Collection does not issue alerts or block traffic. Cloudflare visitor IP headers are accepted only when the immediate peer matches the refreshed official Cloudflare CIDR list; stale or unavailable lists fall back to the peer IP. Existing combined Nginx logs are marked `legacy_unknown`. Query strings, request headers, bodies, cookies, referrers, and user agents are not stored.
 
 UFW logging may be rate-limited. `web_probe` and `ssh_probe` are heuristics, not proof of compromise. SSH event ports are client source ports; firewall event ports are blocked destination ports. Backfill only covers logs and journal entries still available on each VPS. Time series use Unix timestamps; the UI fills empty buckets with zero and displays local time.
+
+## Date filters and event details
+
+Use **From** and **To** to choose calendar dates in your local time zone. Both dates are included. The default selection is today. The picker covers the 30-day retention window. Older events may already have been removed by the collector.
+
+The same dates apply to summary counts, all charts, SSH success and failure tables, and the recent events table. Changing the VPS or dates resets table pagination. Source and event-type filters apply to the recent events table. Longer ranges use daily chart buckets; shorter ranges use hourly buckets.
+
+API clients can send `from` and `to` as Unix timestamps in seconds. `from` is inclusive and `to` is exclusive. To include an entire end date, send the following local midnight as `to`. Both parameters are required when either is supplied. The API rejects reversed bounds, invalid timestamps, and ranges outside the retained history. Legacy `range=24h`, `7d`, and `30d` parameters remain supported for existing API clients; the page uses the custom date picker.
+
+SSH details show the recorded username and source port. Missing values say **Not recorded for this event**. Expand **Example SSH command (illustration)** to see a sample connection command with placeholders explained. The collector does not capture the original client command or commands run inside an SSH session. Source ports are sender-side ports. They are not the destination SSH port on the VPS.
+
+The **IP address source** column explains whether an address came directly from a VPS service, a verified Cloudflare proxy, an unverified Nginx connection, or an older web log.

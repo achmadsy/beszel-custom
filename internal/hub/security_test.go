@@ -3,6 +3,7 @@ package hub
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"github.com/pocketbase/pocketbase/core"
 	_ "github.com/pocketbase/pocketbase/migrations"
 	"github.com/pocketbase/pocketbase/tools/router"
@@ -160,9 +161,72 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 			t.Fatal("cursor repeated an event")
 		}
 	}
+	// Verify the lower bound is included and the upper bound is excluded by both handlers.
+	db, err := sql.Open("sqlite", paths[ids[0]])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, at := range map[int]int64{90: now - 3600, 91: now - 7200} {
+		if _, err := db.Exec("INSERT INTO events (id,occurred_at,source,kind,provenance,username) VALUES (?,?,'ssh','ssh_probe','direct','probe-user')", id, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	bounds := fmt.Sprintf("system=%s&from=%d&to=%d", ids[0], now-7200, now-3600)
+	result, err := request(bounds, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var boundedCounts []struct {
+		Key   string
+		Count int
+	}
+	if err := json.Unmarshal(result["kinds"], &boundedCounts); err != nil {
+		t.Fatal(err)
+	}
+	if len(boundedCounts) != 1 || boundedCounts[0].Key != "ssh_probe" || boundedCounts[0].Count != 1 {
+		t.Fatalf("summary date bounds incorrect: %s", result["kinds"])
+	}
+	var buckets []struct {
+		At    int64
+		Count int
+	}
+	if err := json.Unmarshal(result["series"], &buckets); err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 1 || buckets[0].At != now-7200 || buckets[0].Count != 1 {
+		t.Fatalf("unexpected chart buckets: %s", result["series"])
+	}
+	result, err = request(bounds, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var boundedItems []struct{ ID int64 }
+	if err := json.Unmarshal(result["items"], &boundedItems); err != nil {
+		t.Fatal(err)
+	}
+	if len(boundedItems) != 1 || boundedItems[0].ID != 91 {
+		t.Fatalf("event date bounds incorrect: %s", result["items"])
+	}
+
 	for _, query := range []string{"", "system=unknown", "system=" + ids[0] + "&range=bad", "system=" + ids[0] + "&kind=invalid", "system=" + ids[0] + "&before=invalid"} {
 		if _, err := request(query, false); err == nil {
 			t.Fatalf("invalid query accepted: %s", query)
+		}
+	}
+}
+
+func TestSecurityCustomDateValidation(t *testing.T) {
+	now := time.Now().Unix()
+	invalid := []string{
+		"from=abc&to=123", "from=&to=", fmt.Sprintf("from=%d", now-3600), fmt.Sprintf("to=%d", now),
+		fmt.Sprintf("from=%d&to=%d", now, now), fmt.Sprintf("from=%d&to=%d", now, now-3600),
+		fmt.Sprintf("from=%d&to=%d", now-32*86400, now), fmt.Sprintf("from=%d&to=%d", now, now+2*86400),
+	}
+	for _, query := range invalid {
+		e := &core.RequestEvent{Event: router.Event{Request: httptest.NewRequest("GET", "/?"+query, nil)}}
+		if _, _, err := securityBounds(e); err == nil {
+			t.Fatalf("invalid date range accepted: %s", query)
 		}
 	}
 }

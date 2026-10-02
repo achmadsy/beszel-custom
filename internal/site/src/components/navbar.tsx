@@ -120,7 +120,7 @@ export default function Navbar() {
 							{isAdmin() && (
 								<DropdownMenuItem onClick={() => navigate(getPagePath($router, "security"))} className="flex items-center">
 									<ShieldCheckIcon className="h-4 w-4 me-2.5" strokeWidth={1.5} />
-									Riwayat Keamanan
+									Security history
 								</DropdownMenuItem>
 							)}
 							<DropdownMenuItem
@@ -212,11 +212,11 @@ export default function Navbar() {
 				{isAdmin() && (
 					<Tooltip>
 						<TooltipTrigger asChild>
-							<Link href={getPagePath($router, "security")} className={cn(buttonVariants({ variant: "ghost", size: "icon" }))} aria-label="Riwayat Keamanan">
+							<Link href={getPagePath($router, "security")} className={cn(buttonVariants({ variant: "ghost", size: "icon" }))} aria-label="Security history">
 								<ShieldCheckIcon className="h-[1.2rem] w-[1.2rem]" strokeWidth={1.5} />
 							</Link>
 						</TooltipTrigger>
-						<TooltipContent>Riwayat Keamanan</TooltipContent>
+						<TooltipContent>Security history</TooltipContent>
 					</Tooltip>
 				)}
 				<ModeToggle />

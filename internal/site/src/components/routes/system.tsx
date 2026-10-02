@@ -313,7 +313,7 @@ export default memo(function SystemDetail({ id }: { id: string }) {
 				details={details}
 			/>
 
-			{isAdmin() && <Link href={prependBasePath(`/security/${id}`)} className="justify-self-start rounded-md border bg-background px-4 py-2 text-sm hover:bg-accent">Riwayat keamanan VPS →</Link>}
+			{isAdmin() && <Link href={prependBasePath(`/security/${id}`)} className="justify-self-start rounded-md border bg-background px-4 py-2 text-sm hover:bg-accent">VPS security history →</Link>}
 
 			{displayMode === "tabs" ? tabbedLayout() : defaultLayout()}
 		</div>

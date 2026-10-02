@@ -80,21 +80,36 @@ func (h *Hub) securityDatabase(e *core.RequestEvent) (*sql.DB, error) {
 	return db, nil
 }
 
-func securitySince(e *core.RequestEvent) (int64, error) {
-	switch e.Request.URL.Query().Get("range") {
-	case "", "24h":
-		return time.Now().Add(-24 * time.Hour).Unix(), nil
-	case "7d":
-		return time.Now().Add(-7 * 24 * time.Hour).Unix(), nil
-	case "30d":
-		return time.Now().Add(-30 * 24 * time.Hour).Unix(), nil
-	default:
-		return 0, fmt.Errorf("invalid range")
+// Custom bounds use Unix seconds: inclusive from, exclusive to.
+func securityBounds(e *core.RequestEvent) (int64, int64, error) {
+	q := e.Request.URL.Query()
+	now := time.Now()
+	if q.Has("from") || q.Has("to") {
+		from, errFrom := strconv.ParseInt(q.Get("from"), 10, 64)
+		to, errTo := strconv.ParseInt(q.Get("to"), 10, 64)
+		if errFrom != nil || errTo != nil || from <= 0 || to <= from {
+			return 0, 0, fmt.Errorf("provide a valid start and end date")
+		}
+		if to-from > 31*86400 || from < now.Add(-31*24*time.Hour).Unix() || to > now.Add(24*time.Hour).Unix() {
+			return 0, 0, fmt.Errorf("choose dates within the retained history")
+		}
+		return from, to, nil
 	}
+	days := 1
+	switch q.Get("range") {
+	case "", "24h":
+	case "7d":
+		days = 7
+	case "30d":
+		days = 30
+	default:
+		return 0, 0, fmt.Errorf("invalid range")
+	}
+	return now.Add(-time.Duration(days) * 24 * time.Hour).Unix(), now.Unix() + 1, nil
 }
 
 func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
-	since, err := securitySince(e)
+	since, until, err := securityBounds(e)
 	if err != nil {
 		return e.BadRequestError(err.Error(), nil)
 	}
@@ -126,13 +141,13 @@ func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
 		}
 		return result, rows.Err()
 	}
-	kinds, err := collect("SELECT kind, COUNT(*) FROM events WHERE occurred_at >= ? GROUP BY kind ORDER BY COUNT(*) DESC", since)
+	kinds, err := collect("SELECT kind, COUNT(*) FROM events WHERE occurred_at >= ? AND occurred_at < ? GROUP BY kind ORDER BY COUNT(*) DESC", since, until)
 	if err != nil {
 		return e.InternalServerError("Failed to query security history", err)
 	}
 	// Epoch buckets are returned for correct local-time labels and explicit zero gaps.
 	step := int64(3600)
-	if e.Request.URL.Query().Get("range") == "30d" {
+	if until-since > 3*86400 {
 		step = 86400
 	}
 	type bucket struct {
@@ -141,7 +156,7 @@ func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
 		Count int    `json:"count"`
 	}
 	series := []bucket{}
-	rows, err := db.Query("SELECT (occurred_at / ?) * ?, kind, COUNT(*) FROM events WHERE occurred_at >= ? GROUP BY 1,2 ORDER BY 1", step, step, since)
+	rows, err := db.Query("SELECT ((occurred_at - ?) / ?) * ? + ?, kind, COUNT(*) FROM events WHERE occurred_at >= ? AND occurred_at < ? GROUP BY 1,2 ORDER BY 1", since, step, step, since, since, until)
 	if err != nil {
 		return e.InternalServerError("Failed to query security history", err)
 	}
@@ -158,19 +173,19 @@ func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
 	if err != nil {
 		return e.InternalServerError("Failed to query security history", err)
 	}
-	insight, err := collect("SELECT COALESCE(client_ip, peer_ip, 'unknown'), COUNT(*) FROM events WHERE occurred_at >= ? AND kind != 'web_request' GROUP BY 1 ORDER BY 2 DESC LIMIT 10", since)
+	insight, err := collect("SELECT COALESCE(client_ip, peer_ip, 'unknown'), COUNT(*) FROM events WHERE occurred_at >= ? AND occurred_at < ? AND kind != 'web_request' GROUP BY 1 ORDER BY 2 DESC LIMIT 10", since, until)
 	if err != nil {
 		return e.InternalServerError("Failed to query security history", err)
 	}
-	ports, err := collect("SELECT CAST(port AS TEXT), COUNT(*) FROM events WHERE occurred_at >= ? AND port IS NOT NULL AND kind = 'firewall_block' GROUP BY port ORDER BY 2 DESC LIMIT 10", since)
+	ports, err := collect("SELECT CAST(port AS TEXT), COUNT(*) FROM events WHERE occurred_at >= ? AND occurred_at < ? AND port IS NOT NULL AND kind = 'firewall_block' GROUP BY port ORDER BY 2 DESC LIMIT 10", since, until)
 	if err != nil {
 		return e.InternalServerError("Failed to query security history", err)
 	}
-	return e.JSON(http.StatusOK, map[string]any{"kinds": kinds, "series": series, "top_ips": insight, "top_ports": ports, "since": since, "until": time.Now().Unix(), "step": step, "system": e.Request.URL.Query().Get("system")})
+	return e.JSON(http.StatusOK, map[string]any{"kinds": kinds, "series": series, "top_ips": insight, "top_ports": ports, "since": since, "until": until, "step": step, "system": e.Request.URL.Query().Get("system")})
 }
 
 func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
-	since, err := securitySince(e)
+	since, until, err := securityBounds(e)
 	if err != nil {
 		return e.BadRequestError(err.Error(), nil)
 	}
@@ -208,8 +223,8 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 		return err
 	}
 	defer db.Close()
-	query := "SELECT id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status FROM events WHERE occurred_at >= ? AND (occurred_at < ? OR (occurred_at = ? AND id < ?))"
-	args := []any{since, beforeTime, beforeTime, beforeID}
+	query := "SELECT id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status FROM events WHERE occurred_at >= ? AND occurred_at < ? AND (occurred_at < ? OR (occurred_at = ? AND id < ?))"
+	args := []any{since, until, beforeTime, beforeTime, beforeID}
 	if source != "" {
 		query += " AND source = ?"
 		args = append(args, source)
