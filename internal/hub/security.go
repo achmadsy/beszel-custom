@@ -250,7 +250,16 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 		return err
 	}
 	defer db.Close()
-	query := "SELECT id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status FROM events WHERE occurred_at >= ? AND occurred_at < ? AND (occurred_at < ? OR (occurred_at = ? AND id < ?))"
+	country := strings.ToUpper(strings.TrimSpace(q.Get("country")))
+	if country != "" && country != "LOCAL" && country != "UNKNOWN" && !(len(country) == 2 && country[0] >= 'A' && country[0] <= 'Z' && country[1] >= 'A' && country[1] <= 'Z') {
+		return e.BadRequestError("invalid country filter", nil)
+	}
+	countryColumn, eventSource := "''", "events"
+	if securityCountriesReady(db) {
+		countryColumn = "COALESCE(c.country_code, '')"
+		eventSource += " LEFT JOIN ip_countries c ON c.ip=COALESCE(NULLIF(events.client_ip,''),NULLIF(events.peer_ip,''))"
+	}
+	query := "SELECT id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status," + countryColumn + " FROM " + eventSource + " WHERE occurred_at >= ? AND occurred_at < ? AND (occurred_at < ? OR (occurred_at = ? AND id < ?))"
 	args := []any{since, until, beforeTime, beforeTime, beforeID}
 	if source != "" {
 		query += " AND source = ?"
@@ -259,6 +268,13 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 	if kind != "" {
 		query += " AND kind = ?"
 		args = append(args, kind)
+	}
+	if country != "" {
+		query += " AND " + countryColumn + " = ?"
+		if country == "UNKNOWN" {
+			country = ""
+		}
+		args = append(args, country)
 	}
 	query += " ORDER BY occurred_at DESC, id DESC LIMIT ?"
 	search := strings.TrimSpace(q.Get("q"))
@@ -278,21 +294,11 @@ func (h *Hub) getSecurityEvents(e *core.RequestEvent) error {
 	}
 	defer rows.Close()
 	items := []map[string]any{}
-	countryReady := securityCountriesReady(db)
 	for rows.Next() {
 		var v securityEvent
-		if err = rows.Scan(&v.ID, &v.At, &v.Source, &v.Kind, &v.PeerIP, &v.ClientIP, &v.Provenance, &v.Host, &v.Username, &v.Method, &v.Path, &v.Port, &v.Status); err != nil {
+		var country string
+		if err = rows.Scan(&v.ID, &v.At, &v.Source, &v.Kind, &v.PeerIP, &v.ClientIP, &v.Provenance, &v.Host, &v.Username, &v.Method, &v.Path, &v.Port, &v.Status, &country); err != nil {
 			return e.InternalServerError("Failed to query security history", err)
-		}
-		country := ""
-		if countryReady {
-			ip := v.ClientIP.String
-			if ip == "" {
-				ip = v.PeerIP.String
-			}
-			if err := db.QueryRow("SELECT country_code FROM ip_countries WHERE ip=?", ip).Scan(&country); err != nil && err != sql.ErrNoRows {
-				return e.InternalServerError("Failed to query country history", err)
-			}
 		}
 		items = append(items, map[string]any{"country_code": country, "id": v.ID, "at": v.At, "source": v.Source, "kind": v.Kind, "peer_ip": v.PeerIP.String, "client_ip": v.ClientIP.String, "provenance": v.Provenance, "host": v.Host.String, "username": v.Username.String, "method": v.Method.String, "path": v.Path.String, "port": v.Port.Int64, "status": v.Status.Int64})
 	}

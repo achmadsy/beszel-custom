@@ -28,6 +28,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { SecurityCountryFilter } from "./security-country-filter"
 import { SecurityCountryMap } from "./security-country-map"
 import { Button } from "@/components/ui/button"
 import { ChartContainer } from "@/components/ui/chart"
@@ -461,13 +462,27 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 							</TabsTrigger>
 						</TabsList>
 						<TabsContent value="events" className="min-h-0 flex-1 overflow-y-auto">
-							<AllEvents system={system} range={range} />
+							<AllEvents system={system} range={range} countries={summary.countries || []} />
 						</TabsContent>
 						<TabsContent value="ssh_success" className="min-h-0 flex-1 overflow-y-auto">
-							<EventTable system={system} range={range} fixedKind="ssh_success" title="SSH success" total={successes} />
+							<EventTable
+								system={system}
+								range={range}
+								fixedKind="ssh_success"
+								title="SSH success"
+								total={successes}
+								countries={summary.countries || []}
+							/>
 						</TabsContent>
 						<TabsContent value="ssh_failure" className="min-h-0 flex-1 overflow-y-auto">
-							<EventTable system={system} range={range} fixedKind="ssh_failure" title="SSH failure" total={failures} />
+							<EventTable
+								system={system}
+								range={range}
+								fixedKind="ssh_failure"
+								title="SSH failure"
+								total={failures}
+								countries={summary.countries || []}
+							/>
 						</TabsContent>
 					</Tabs>
 				</DialogContent>
@@ -534,7 +549,7 @@ function Ranking({
 	)
 }
 
-function AllEvents({ system, range }: { system: string; range: DateRange }) {
+function AllEvents({ system, range, countries }: { system: string; range: DateRange; countries: Count[] }) {
 	const [source, setSource] = useState("")
 	const [kind, setKind] = useState("")
 	return (
@@ -567,12 +582,12 @@ function AllEvents({ system, range }: { system: string; range: DateRange }) {
 				/>
 			</div>
 			<EventTable
-				key={`${source}:${kind}`}
 				system={system}
 				range={range}
 				source={source}
 				fixedKind={kind}
 				anchor="events"
+				countries={countries}
 				title="Recent events"
 			/>
 		</div>
@@ -587,6 +602,7 @@ function EventTable({
 	anchor,
 	title,
 	total,
+	countries,
 }: {
 	system: string
 	range: DateRange
@@ -595,6 +611,7 @@ function EventTable({
 	anchor?: string
 	title: string
 	total?: number
+	countries: Count[]
 }) {
 	const [events, setEvents] = useState<SecurityEvent[]>([])
 	const [next, setNext] = useState("")
@@ -603,6 +620,7 @@ function EventTable({
 	const [pageSize, setPageSize] = useState("10")
 	const [search, setSearch] = useState("")
 	const [query, setQuery] = useState("")
+	const [country, setCountry] = useState("")
 	useEffect(() => {
 		const timer = setTimeout(() => setQuery(search.trim()), 300)
 		return () => clearTimeout(timer)
@@ -625,6 +643,7 @@ function EventTable({
 				kind: fixedKind,
 				limit: pageSize,
 				q: query,
+				country,
 			})
 			if (before) params.set("before", before)
 			const data = await pb.send<Events>(`/api/beszel/security/events?${params}`, {
@@ -653,7 +672,7 @@ function EventTable({
 		setCursors([""])
 		void load()
 		return () => controller.abort()
-	}, [system, range, source, fixedKind, query, pageSize])
+	}, [system, range, source, fixedKind, query, pageSize, country])
 	return (
 		<section
 			id={anchor || fixedKind}
@@ -662,7 +681,7 @@ function EventTable({
 		>
 			<div className="mb-4 flex items-center gap-3">
 				<h2 className="font-semibold">{title}</h2>
-				{total !== undefined && (
+				{total !== undefined && !query && !country && (
 					<span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${kinds[fixedKind].badge}`}>
 						{formatNumber(total)} {total === 1 ? "event" : "events"}
 					</span>
@@ -687,6 +706,7 @@ function EventTable({
 					onChange={(event) => setSearch(event.target.value)}
 					className="h-9 min-w-40 flex-1"
 				/>
+				<SecurityCountryFilter value={country} onChange={setCountry} countries={countries} />
 				<SecuritySelect
 					label="Rows per page"
 					value={pageSize}
@@ -782,7 +802,9 @@ function EventTable({
 						: events.length
 							? `Rows ${page * Number(pageSize) + 1} to ${page * Number(pageSize) + events.length}`
 							: "0 rows"}
-					{total !== undefined && !query ? ` of ${formatNumber(total)} {total === 1 ? "event" : "events"}s` : ""}
+					{total !== undefined && !query && !country
+						? ` of ${formatNumber(total)} ${total === 1 ? "event" : "events"}`
+						: ""}
 				</span>
 				<div className="flex items-center gap-2">
 					<Button

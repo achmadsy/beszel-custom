@@ -1,6 +1,6 @@
 # Beszel Custom
 
-This fork adds security history per VPS, interactive event charts, an interactive IP country map and table labels, custom date ranges, and a searchable event explorer with SSH success/failure tabs, pagination, and readable activity details. See the [step-by-step security installation guide](security/README.md#supported-quick-start), including data sources, collector setup, Nginx logging, and multiple VPSes. Security collection currently requires a separate collector and database mapping; it is not automatically installed by the standard Beszel agent.
+This fork adds security history per VPS, interactive event charts, an interactive IP country map, searchable country filters, and country labels in tables, custom date ranges, and a searchable event explorer with SSH success/failure tabs, pagination, and readable activity details. See the [step-by-step security installation guide](security/README.md#supported-quick-start), including data sources, collector setup, Nginx logging, and multiple VPSes. Security collection currently requires a separate collector and database mapping; it is not automatically installed by the standard Beszel agent.
 
 
 ## Install the security dashboard

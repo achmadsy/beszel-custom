@@ -217,6 +217,51 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 			t.Fatalf("search did not treat input literally: %s", found["items"])
 		}
 	}
+	for _, test := range []struct {
+		index    int
+		country  string
+		expected int
+	}{{0, "US", 2}, {0, "us", 2}, {0, "DE", 0}, {0, "UNKNOWN", 0}, {1, "UNKNOWN", 3}, {1, "US", 0}, {1, "LOCAL", 0}} {
+		found, err := request("system="+ids[test.index]+"&country="+test.country, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var matches []map[string]any
+		json.Unmarshal(found["items"], &matches)
+		if len(matches) != test.expected {
+			t.Fatalf("country %s returned %d events for VPS %d", test.country, len(matches), test.index)
+		}
+	}
+	if _, err := request("system="+ids[0]+"&country=invalid", false); err == nil {
+		t.Fatal("invalid country filter accepted")
+	}
+	combined, err := request("system="+ids[0]+"&country=US&kind=ssh_failure&q=8.8.8", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var combinedItems []map[string]any
+	json.Unmarshal(combined["items"], &combinedItems)
+	if len(combinedItems) != 0 {
+		t.Fatal("country filter ignored event kind")
+	}
+	dbLocal, err := sql.Open("sqlite", paths[ids[0]])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = dbLocal.Exec("INSERT INTO ip_countries VALUES ('10.0.0.1','LOCAL'); INSERT INTO events(id,occurred_at,source,kind,peer_ip,provenance,username) VALUES (93,?,'ssh','ssh_success','10.0.0.1','direct','local-user')", now-100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbLocal.Close()
+	local, err := request("system="+ids[0]+"&country=LOCAL&q=local-user&limit=1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var localItems []map[string]any
+	json.Unmarshal(local["items"], &localItems)
+	if len(localItems) != 1 || localItems[0]["country_code"] != "LOCAL" {
+		t.Fatal("non-public country filter failed")
+	}
 	// Verify the lower bound is included and the upper bound is excluded by both handlers.
 	db, err := sql.Open("sqlite", paths[ids[0]])
 	if err != nil {
@@ -293,6 +338,17 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 	if len(pastItems) != 1 || pastItems[0]["username"] != "historical-user" {
 		t.Fatalf("older event missing: %s", past["items"])
 	}
+	// Country joins must preserve custom date bounds and unknown addresses.
+	unknown, err := request(fmt.Sprintf("system=%s&country=UNKNOWN&from=%d&to=%d", ids[0], oldest, oldest+86400), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unknownItems []map[string]any
+	json.Unmarshal(unknown["items"], &unknownItems)
+	if len(unknownItems) != 1 || unknownItems[0]["username"] != "historical-user" {
+		t.Fatal("country filter changed historical date bounds")
+	}
+
 	for _, query := range []string{"", "system=unknown", "system=" + ids[0] + "&range=bad", "system=" + ids[0] + "&kind=invalid", "system=" + ids[0] + "&before=invalid"} {
 		if _, err := request(query, false); err == nil {
 			t.Fatalf("invalid query accepted: %s", query)
