@@ -3,6 +3,19 @@
 This fork adds security history per VPS, interactive event charts, custom date ranges, and dedicated SSH success/failure tables with readable activity details. See the [step-by-step security installation guide](security/README.md#supported-quick-start), including data sources, collector setup, Nginx logging, and multiple VPSes. Security collection currently requires a separate collector and database mapping; it is not automatically installed by the standard Beszel agent.
 
 
+## Install the security dashboard
+
+Follow the [security installation guide](security/README.md) for the commands and Compose configuration. The supported setup uses Linux amd64, Docker Compose, Python 3, and systemd on Ubuntu or Debian.
+
+1. [Build the custom hub image](security/README.md#1-clone-and-build-the-custom-hub) from this repository.
+2. [Install the collector on each VPS](security/README.md#2-install-the-collector-on-each-monitored-vps).
+3. [Configure Nginx logging](security/README.md#3-enable-web-logging-if-you-use-nginx) if you want web events.
+4. [Import available historical logs and start the timer](security/README.md#4-start-collection-and-check-it). The import prints progress. It can recover months of history when those logs still exist.
+5. [Map each database to its Beszel system ID](security/README.md#5-attach-the-database-to-the-correct-beszel-vps), start the hub, and open Security history as an admin.
+
+For remote VPSes, follow the [database delivery instructions](security/README.md#remote-vpses-and-multiple-databases). The standard Beszel agent does not transfer security logs. The date picker offers All time, 30 days, 7 days, Today, and custom ranges. History is kept by default; [retention is configurable](security/README.md#retention). Logs that have already been deleted cannot be recovered.
+
+
 Beszel monitors server resources, Docker containers, historical metrics, and alerts.
 
 The hub provides a web interface with backups, multiple users, OAuth authentication, and an API.

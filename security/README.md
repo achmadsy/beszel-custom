@@ -13,7 +13,7 @@ This fork adds an admin-only security dashboard to Beszel: event charts, per-VPS
 | Web requests and suspicious web paths | `/var/log/nginx/beszel-security.log`, a JSON Nginx access log |
 | Initial web backfill | Existing `/var/log/nginx/access.log` rotations, marked `legacy_unknown` |
 
-The systemd timer runs the collector every minute. It stores sanitized events and collection cursors in `/var/lib/beszel-security/events.db`, retaining 30 days. The hub reads this SQLite database through a read-only mount. Graphs reflect recorded log events, not every packet or connection. A successful SSH login is not the same as an active SSH session.
+The systemd timer runs the collector every minute. It stores sanitized events and collection cursors in `/var/lib/beszel-security/events.db`, keeping all imported history by default. The hub reads this SQLite database through a read-only mount. Graphs reflect recorded log events, not every packet or connection. A successful SSH login is not the same as an active SSH session.
 
 ## Supported quick start
 
@@ -55,7 +55,7 @@ sudo install -m 0644 security/beszel-security.service /etc/systemd/system/
 sudo install -m 0644 security/beszel-security.timer /etc/systemd/system/
 ```
 
-If this host has no Nginx or persistent journal directory, create a service override to make these read paths optional:
+The supplied service already treats absent Nginx and journal directories as optional. Existing installations can use this override when upgrading:
 
 ```sh
 sudo mkdir -p /etc/systemd/system/beszel-security.service.d
@@ -97,7 +97,7 @@ Run `sudo nginx -t` and reload Nginx after any changes. Generate a request to on
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl start beszel-security.service
+sudo -u beszel-audit python3 /opt/beszel-security/collector.py --backfill
 sudo systemctl enable --now beszel-security.timer
 systemctl list-timers beszel-security.timer
 sudo journalctl -u beszel-security.service -n 30 --no-pager
@@ -108,7 +108,22 @@ with sqlite3.connect('file:/var/lib/beszel-security/events.db?mode=ro', uri=True
 PY
 ```
 
-An empty result is valid when no matching events remain in the logs. The first run can take longer while importing available history. Do not restart collection repeatedly just because there is no data yet.
+The backfill command runs in the foreground and prints the log being imported, progress every 10,000 records, and the final event count and timestamp coverage. Wait for it to finish before enabling the timer or attaching the database. The service has no startup timeout, so a large import can finish. Repeat `--backfill` to rescan retained logs after an upgrade; existing event IDs prevent repeat imports.
+
+Historical imports read all available SSH and kernel journal boots, SSH text logs (`auth.log*`, `secure*`), firewall logs (`ufw.log*`, `kern.log*`), and Nginx access logs, including `.gz` rotations. Installing this fork months after creating a VPS can show those months if the logs still exist. Deleted, expired, or never recorded logs cannot be recovered. Traditional syslog timestamps omit the year; the importer infers it from the file modification date. Very old archives with changed modification dates may have inaccurate years. Existing combined Nginx logs do not provide verified visitor IPs behind a proxy.
+
+An empty result is valid when no matching events remain in the logs. Check free disk space before importing large archives. The collector stores selected event fields rather than complete log lines.
+
+### Retention
+
+`SECURITY_RETENTION_DAYS=0` is the default and keeps all stored events. To limit storage, add a systemd override:
+
+```ini
+[Service]
+Environment=SECURITY_RETENTION_DAYS=90
+```
+
+Run `sudo systemctl daemon-reload` after saving it with `sudo systemctl edit beszel-security.service`. A positive value filters imports and deletes stored events older than that many days on the next collection. For a manual backfill, pass the same value with `sudo -u beszel-audit env SECURITY_RETENTION_DAYS=90 python3 /opt/beszel-security/collector.py --backfill`. Back up the database before reducing retention.
 
 If UFW is already managing this VPS's firewall, check `sudo ufw status verbose`. Enable logging with `sudo ufw logging low` if desired. The collector does not enable UFW, change firewall rules, or block IPs.
 
@@ -222,11 +237,11 @@ UFW logging may be rate-limited. `web_probe` and `ssh_probe` are heuristics, not
 
 ## Date filters and event details
 
-Use **From** and **To** to choose calendar dates in your local time zone. Both dates are included. The default selection is today. The picker covers the 30-day retention window. Older events may already have been removed by the collector.
+Use the single **Date range** field to open the themed calendar. Choose **All time**, **30 days**, **7 days**, or **Today**, or click a start and end date and select **Apply dates**. Both calendar dates are included in your local time zone. Today is the default. All time covers every event stored in the selected VPS database. The 7-day and 30-day presets include today. Cancel keeps the current selection. Use the month and year dropdowns to reach older dates.
 
-The same dates apply to summary counts, all charts, SSH success and failure tables, and the recent events table. Changing the VPS or dates resets table pagination. Source and event-type filters apply to the recent events table. Longer ranges use daily chart buckets; shorter ranges use hourly buckets.
+The same dates apply to summary counts, all charts, SSH success and failure tables, and the recent events table. Changing the VPS or dates resets table pagination. Source and event-type filters apply to the recent events table. Charts use hourly, daily, weekly, or 30-day buckets depending on the length of the range.
 
-API clients can send `from` and `to` as Unix timestamps in seconds. `from` is inclusive and `to` is exclusive. To include an entire end date, send the following local midnight as `to`. Both parameters are required when either is supplied. The API rejects reversed bounds, invalid timestamps, and ranges outside the retained history. Legacy `range=24h`, `7d`, and `30d` parameters remain supported for existing API clients; the page uses the custom date picker.
+API clients can send `from` and `to` as Unix timestamps in seconds. `from` is inclusive and `to` is exclusive. To include an entire end date, send the following local midnight as `to`. Both parameters are required when either is supplied. The API rejects reversed bounds, invalid timestamps, and end dates more than a day in the future. `range=all` includes all stored history. Legacy `range=24h`, `7d`, and `30d` parameters remain supported for existing API clients; the page offers presets and custom calendar dates.
 
 SSH details show the recorded username and source port. Missing values say **Not recorded for this event**. Expand **Example SSH command (illustration)** to see a sample connection command with placeholders explained. The collector does not capture the original client command or commands run inside an SSH session. Source ports are sender-side ports. They are not the destination SSH port on the VPS.
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Read-only VPS audit collector. Stores a deliberately small, sanitized event set."""
+import argparse
+import fcntl
 import datetime as dt
 import gzip
 import hashlib
@@ -16,7 +18,11 @@ DB = Path(os.environ.get("SECURITY_DB", "/var/lib/beszel-security/events.db"))
 AUDIT_LOG = Path("/var/log/nginx/beszel-security.log")
 ACCESS_LOG = Path("/var/log/nginx/access.log")
 NOW = dt.datetime.now(dt.timezone.utc)
-CUTOFF = NOW - dt.timedelta(days=30)
+RETENTION_DAYS = int(os.environ.get("SECURITY_RETENTION_DAYS", "0"))
+if RETENTION_DAYS < 0:
+    raise ValueError("SECURITY_RETENTION_DAYS must be zero or positive")
+CUTOFF = NOW - dt.timedelta(days=RETENTION_DAYS) if RETENTION_DAYS else None
+BACKFILL = False
 SSH_SUCCESS = re.compile(r"Accepted (?:publickey|password|keyboard-interactive(?:/pam)?) for (\S+) from ([0-9a-fA-F:.]+) port (\d+)")
 SSH_FAIL = re.compile(r"Failed (?:password|publickey|keyboard-interactive(?:/pam)?) for (?:invalid user )?(\S+) from ([0-9a-fA-F:.]+) port (\d+)")
 SSH_INVALID = re.compile(r"Invalid user (\S+) from ([0-9a-fA-F:.]+)")
@@ -57,50 +63,61 @@ def set_cursor(db, key, value):
 
 
 def add(db, source_id, when, source, kind, peer=None, client=None, provenance="direct", host=None, username=None, method=None, path=None, port=None, status=None):
-    if when < int(CUTOFF.timestamp()) or when > int((NOW + dt.timedelta(minutes=5)).timestamp()):
+    if (CUTOFF and when < int(CUTOFF.timestamp())) or when > int((NOW + dt.timedelta(minutes=5)).timestamp()):
         return
     db.execute("INSERT OR IGNORE INTO events(source_id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (source_id, when, source, kind, peer, client, provenance, clean_text(host, 150) or None, clean_text(username, 100) or None, clean_text(method, 16) or None, clean_text(path, 400) or None, port, status))
+
+
+def add_message(db, name, source_id, when, message):
+    if name == "ssh":
+        match = SSH_SUCCESS.search(message)
+        if match:
+            user, ip, port = match.groups()
+            add(db, source_id, when, "ssh", "ssh_success", clean_ip(ip), clean_ip(ip), username=user, port=int(port))
+            return
+        match = SSH_FAIL.search(message)
+        if match:
+            user, ip, port = match.groups()
+            add(db, source_id, when, "ssh", "ssh_failure", clean_ip(ip), clean_ip(ip), username=user, port=int(port))
+            return
+        match = SSH_INVALID.search(message)
+        if match:
+            user, ip = match.groups()
+            add(db, source_id, when, "ssh", "ssh_probe", clean_ip(ip), clean_ip(ip), username=user)
+            return
+        match = SSH_PROBE.search(message)
+        if match:
+            ip, port = match.groups()
+            add(db, source_id, when, "ssh", "ssh_probe", clean_ip(ip), clean_ip(ip), port=int(port))
+    else:
+        match = UFW.search(message)
+        if match:
+            ip = match.group(1)
+            port = UFW_PORT.search(message)
+            add(db, source_id, when, "firewall", "firewall_block", clean_ip(ip), clean_ip(ip), port=int(port.group(1)) if port else None)
 
 
 def journal(db, name, args):
     key = "journal:" + name
     command = ["journalctl", "--no-pager", "-o", "json", *args]
-    previous = cursor(db, key)
-    command += ["--after-cursor", previous] if previous else ["--since", "30 days ago"]
+    previous = None if BACKFILL else cursor(db, key)
+    if previous:
+        command += ["--after-cursor", previous]
+    elif CUTOFF:
+        command += ["--since", CUTOFF.isoformat()]
+    print(f"Reading {name} journal...", flush=True)
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
     last = None
-    for line in proc.stdout:
+    for number, line in enumerate(proc.stdout, 1):
+        if number % 10000 == 0:
+            db.commit()
+            print(f"{name}: scanned {number:,} journal records", flush=True)
         try:
             item = json.loads(line)
             last = item.get("__CURSOR", last)
             message = item.get("MESSAGE", "")
             when = int(item["__REALTIME_TIMESTAMP"]) // 1000000
-            if name == "ssh":
-                match = SSH_SUCCESS.search(message)
-                if match:
-                    user, ip, port = match.groups()
-                    add(db, last, when, "ssh", "ssh_success", clean_ip(ip), clean_ip(ip), username=user, port=int(port))
-                    continue
-                match = SSH_FAIL.search(message)
-                if match:
-                    user, ip, port = match.groups()
-                    add(db, last, when, "ssh", "ssh_failure", clean_ip(ip), clean_ip(ip), username=user, port=int(port))
-                    continue
-                match = SSH_INVALID.search(message)
-                if match:
-                    user, ip = match.groups()
-                    add(db, last, when, "ssh", "ssh_probe", clean_ip(ip), clean_ip(ip), username=user)
-                    continue
-                match = SSH_PROBE.search(message)
-                if match:
-                    ip, port = match.groups()
-                    add(db, last, when, "ssh", "ssh_probe", clean_ip(ip), clean_ip(ip), port=int(port))
-            else:
-                match = UFW.search(message)
-                if match:
-                    ip = match.group(1)
-                    port = UFW_PORT.search(message)
-                    add(db, last, when, "firewall", "firewall_block", clean_ip(ip), clean_ip(ip), port=int(port.group(1)) if port else None)
+            add_message(db, name, last, when, message)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError):
             continue
     stderr = proc.communicate()[1]
@@ -155,7 +172,7 @@ def web(db, ranges):
     for file in sorted(AUDIT_LOG.parent.glob(AUDIT_LOG.name + ".*.gz")):
         stat = file.stat()
         key = f"web:gzip:{stat.st_dev}:{stat.st_ino}:{stat.st_size}"
-        if cursor(db, key):
+        if cursor(db, key) and not BACKFILL:
             continue
         try:
             with gzip.open(file, "rt", encoding="utf-8", errors="replace") as handle:
@@ -171,7 +188,7 @@ def web(db, ranges):
             continue
         stat = file.stat()
         key = f"web:inode:{stat.st_dev}:{stat.st_ino}"
-        offset = int(cursor(db, key) or 0)
+        offset = 0 if BACKFILL else int(cursor(db, key) or 0)
         if offset > stat.st_size:
             offset = 0
         with file.open("r", encoding="utf-8", errors="replace") as handle:
@@ -186,14 +203,18 @@ def web(db, ranges):
 
 
 def historic_web(db):
-    if cursor(db, "historical:done"):
+    if cursor(db, "historical:v2") and not BACKFILL:
         return
     files = sorted(ACCESS_LOG.parent.glob("access.log*"))
     for file in files:
+        print(f"Importing {file.name}...", flush=True)
         opener = gzip.open if file.suffix == ".gz" else open
         try:
             with opener(file, "rt", encoding="utf-8", errors="replace") as handle:
                 for number, line in enumerate(handle):
+                    if number and number % 10000 == 0:
+                        db.commit()
+                        print(f"{file.name}: scanned {number:,} records", flush=True)
                     match = COMBINED.match(line)
                     if not match:
                         continue
@@ -203,28 +224,108 @@ def historic_web(db):
                     except ValueError:
                         continue
                     path = path.split("?", 1)[0]
+                    if db.execute("SELECT 1 FROM events WHERE occurred_at=? AND source='web' AND peer_ip IS ? AND method=? AND path=? AND status=? LIMIT 1", (when, clean_ip(ip), method, path, int(status))).fetchone():
+                        continue
                     event_id = hashlib.sha256(f"{file.name}:{number}:{line}".encode()).hexdigest()
                     add(db, "historic:" + event_id, when, "web", "web_probe" if PROBE.search(path) else "web_request", clean_ip(ip), None, "legacy_unknown", method=method, path=path, status=int(status))
         except OSError:
             continue
-    set_cursor(db, "historical:done", "1")
+    set_cursor(db, "historical:v2", "1")
     db.commit()
 
 
+def historic_system(db):
+    """Import retained SSH and firewall text logs, including gzip archives."""
+    for pattern in ("auth.log*", "secure*", "ufw.log*", "kern.log*"):
+        for file in sorted(Path("/var/log").glob(pattern)):
+            if not file.is_file():
+                continue
+            stat = file.stat()
+            key = f"system-file:{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
+            if cursor(db, key) and not BACKFILL:
+                continue
+            print(f"Importing {file.name}...", flush=True)
+            compressed = file.suffix == ".gz"
+            opener = gzip.open if compressed else open
+            offset_key = f"system-offset:{stat.st_dev}:{stat.st_ino}"
+            offset = 0 if BACKFILL or compressed else int(cursor(db, offset_key) or 0)
+            if offset > stat.st_size:
+                offset = 0
+            try:
+                with opener(file, "rt", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(offset)
+                    number = 0
+                    while line := handle.readline():
+                        if not line.endswith("\n"):
+                            break
+                        number += 1
+                        if not compressed:
+                            set_cursor(db, offset_key, handle.tell())
+                        if number % 10000 == 0:
+                            db.commit()
+                            print(f"{file.name}: scanned {number:,} records", flush=True)
+                        if "sshd" not in line and "[UFW BLOCK]" not in line:
+                            continue
+                        try:
+                            when = syslog_time(line, stat.st_mtime)
+                        except ValueError:
+                            continue
+                        name = "ssh" if "sshd" in line else "ufw"
+                        source_id = "syslog:" + hashlib.sha256(line.encode()).hexdigest()
+                        before = db.total_changes
+                        add_message(db, name, source_id, when, line)
+                        if db.total_changes != before:
+                            db.execute("DELETE FROM events WHERE source_id=? AND EXISTS (SELECT 1 FROM events AS other WHERE other.id != events.id AND other.occurred_at=events.occurred_at AND other.source=events.source AND other.kind=events.kind AND other.peer_ip IS events.peer_ip AND other.username IS events.username AND other.port IS events.port)", (source_id,))
+            except OSError as error:
+                print(f"Could not read {file.name}: {error.strerror}", flush=True)
+                continue
+            set_cursor(db, key, "done")
+            db.commit()
+
+
+def syslog_time(line, modified):
+    first = line.split(" ", 1)[0]
+    if re.match(r"^\d{4}-\d{2}-\d{2}T", first):
+        return int(dt.datetime.fromisoformat(first.replace("Z", "+00:00")).timestamp())
+    reference = dt.datetime.fromtimestamp(modified).astimezone()
+    date = dt.datetime.strptime(f"{reference.year} {line[:15]}", "%Y %b %d %H:%M:%S").astimezone()
+    if date > reference + dt.timedelta(days=1):
+        date = date.replace(year=date.year - 1)
+    return int(date.timestamp())
+
+
 def main():
+    global BACKFILL
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backfill", action="store_true", help="Rescan available logs with progress")
+    BACKFILL = parser.parse_args().backfill
     DB.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     old_umask = os.umask(0o077)
     try:
-        with sqlite3.connect(DB, timeout=30) as db:
-            init(db)
-            journal(db, "ssh", ["-u", "ssh.service"])
-            journal(db, "ufw", ["-k"])
-            web(db, cf_ranges(db))
-            historic_web(db)
-            db.execute("DELETE FROM events WHERE occurred_at < ?", (int(CUTOFF.timestamp()),))
-            db.commit()
+        with (DB.parent / "collector.lock").open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("Collection is already running. Try again after it finishes.", flush=True)
+                return
+            collect()
     finally:
         os.umask(old_umask)
+
+
+def collect():
+    with sqlite3.connect(DB, timeout=30) as db:
+        init(db)
+        journal(db, "ssh", ["_COMM=sshd"])
+        journal(db, "ufw", ["_TRANSPORT=kernel"])
+        web(db, cf_ranges(db))
+        historic_system(db)
+        historic_web(db)
+        if CUTOFF:
+            db.execute("DELETE FROM events WHERE occurred_at < ?", (int(CUTOFF.timestamp()),))
+        db.commit()
+        count, oldest, newest = db.execute("SELECT COUNT(*), MIN(occurred_at), MAX(occurred_at) FROM events").fetchone()
+        print(f"Collection complete: {count:,} events. Timestamp coverage: {oldest} to {newest}.", flush=True)
 
 
 if __name__ == "__main__":

@@ -90,8 +90,8 @@ func securityBounds(e *core.RequestEvent) (int64, int64, error) {
 		if errFrom != nil || errTo != nil || from <= 0 || to <= from {
 			return 0, 0, fmt.Errorf("provide a valid start and end date")
 		}
-		if to-from > 31*86400 || from < now.Add(-31*24*time.Hour).Unix() || to > now.Add(24*time.Hour).Unix() {
-			return 0, 0, fmt.Errorf("choose dates within the retained history")
+		if to > now.Add(24*time.Hour).Unix() {
+			return 0, 0, fmt.Errorf("end date cannot be in the future")
 		}
 		return from, to, nil
 	}
@@ -102,6 +102,8 @@ func securityBounds(e *core.RequestEvent) (int64, int64, error) {
 		days = 7
 	case "30d":
 		days = 30
+	case "all":
+		return 0, now.Unix() + 1, nil
 	default:
 		return 0, 0, fmt.Errorf("invalid range")
 	}
@@ -118,6 +120,11 @@ func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
 		return err
 	}
 	defer db.Close()
+	if since == 0 {
+		if err := db.QueryRow("SELECT COALESCE(MIN(occurred_at), ?) FROM events", until-1).Scan(&since); err != nil {
+			return e.InternalServerError("Failed to query security history", err)
+		}
+	}
 	if err = db.Ping(); err != nil {
 		return e.InternalServerError("Security history unavailable", err)
 	}
@@ -149,6 +156,12 @@ func (h *Hub) getSecuritySummary(e *core.RequestEvent) error {
 	step := int64(3600)
 	if until-since > 3*86400 {
 		step = 86400
+	}
+	if until-since > 366*86400 {
+		step = 7 * 86400
+	}
+	if until-since > 5*366*86400 {
+		step = 30 * 86400
 	}
 	type bucket struct {
 		At    int64  `json:"at"`

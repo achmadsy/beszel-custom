@@ -19,7 +19,12 @@ import { pb } from "@/lib/api"
 import { SecurityEventDetail } from "./security-event-detail"
 import { $systems } from "@/lib/stores"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Input } from "@/components/ui/input"
+import {
+	SecurityDatePicker,
+	presetRange,
+	rangeParams,
+	type SecurityDateRange as DateRange,
+} from "./security-date-picker"
 import { Button } from "@/components/ui/button"
 import { ChartContainer } from "@/components/ui/chart"
 import { Link, navigate, prependBasePath } from "@/components/router"
@@ -50,15 +55,6 @@ type SecurityEvent = {
 	status: number
 }
 type Events = { items: SecurityEvent[]; next_before: string }
-type DateRange = { from: string; to: string }
-function dateKey(date: Date) {
-	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
-}
-function rangeParams(range: DateRange) {
-	const end = new Date(`${range.to}T00:00:00`)
-	end.setDate(end.getDate() + 1)
-	return { from: String(new Date(`${range.from}T00:00:00`).getTime() / 1000), to: String(end.getTime() / 1000) }
-}
 const kinds: Record<string, { label: string; color: string; badge: string }> = {
 	ssh_success: {
 		label: "SSH success",
@@ -102,22 +98,15 @@ const tooltipStyle = {
 
 export default function Security({ id }: { id?: string }) {
 	const systems = useStore($systems)
-	const today = dateKey(new Date())
-	const earliest = new Date()
-	earliest.setDate(earliest.getDate() - 30)
-	const minDate = dateKey(earliest)
-	const [range, setRange] = useState<DateRange>(() => ({ from: today, to: today }))
-	const system = systems.find((item) => item.id === id)
+	const [range, setRange] = useState<DateRange>(() => presetRange("today"))
 	return (
-		<div className="grid min-w-0 gap-5 pb-12">
-			<header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card p-5">
+		<div className="grid min-w-0 gap-4 pb-12">
+			<header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div className="flex items-center gap-3">
-					<ShieldCheck className="size-9 text-sky-600 dark:text-sky-400" />
+					<ShieldCheck className="size-6 text-sky-600 dark:text-sky-400" />
 					<div>
-						<h1 className="text-2xl font-semibold">Security history{system ? `: ${system.name}` : " VPS"}</h1>
-						<p className="mt-1 text-sm text-muted-foreground">
-							SSH, firewall, and web history for each VPS. Admin access required.
-						</p>
+						<h1 className="text-xl font-semibold">Security history</h1>
+						<p className="mt-1 text-sm text-muted-foreground">SSH, firewall, and web events.</p>
 					</div>
 				</div>
 				<div className="flex flex-wrap gap-2">
@@ -130,45 +119,11 @@ export default function Security({ id }: { id?: string }) {
 							...systems.map((item) => ({ value: item.id, label: item.name })),
 						]}
 					/>
-					<div className="flex max-w-full flex-wrap items-end gap-2 rounded-lg border bg-background p-2">
-						<label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-							From
-							<Input
-								aria-label="Start date"
-								type="date"
-								className="w-40 max-w-full"
-								value={range.from}
-								min={minDate}
-								max={range.to}
-								onChange={(e) => {
-									const value = e.target.value
-									if (value && value >= minDate && value <= range.to) setRange((old) => ({ ...old, from: value }))
-								}}
-							/>
-						</label>
-						<label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-							To
-							<Input
-								aria-label="End date"
-								type="date"
-								className="w-40 max-w-full"
-								value={range.to}
-								min={range.from}
-								max={today}
-								onChange={(e) => {
-									const value = e.target.value
-									if (value && value >= range.from && value <= today) setRange((old) => ({ ...old, to: value }))
-								}}
-							/>
-						</label>
-						<p className="w-full text-xs text-muted-foreground">
-							Local dates. Both dates included. History retained for 30 days.
-						</p>
-					</div>
+					<SecurityDatePicker value={range} onChange={setRange} />
 				</div>
 			</header>
 			{id ? (
-				<SecurityView key={`${id}:${range.from}:${range.to}`} system={id} range={range} />
+				<SecurityView key={`${id}:${range.preset}:${range.from}:${range.to}`} system={id} range={range} />
 			) : (
 				<div className={panel}>
 					<h2 className="mb-2 font-semibold">Choose a VPS to view its history</h2>
@@ -243,7 +198,7 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 	const timeLabel = (at: number) =>
 		new Date(at * 1000).toLocaleString(
 			"en",
-			summary.step === 86400
+			summary.step >= 86400
 				? { day: "numeric", month: "short" }
 				: range.from === range.to
 					? { hour: "2-digit", minute: "2-digit" }
@@ -288,7 +243,14 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 						<div>
 							<h2 className="font-semibold">Activity over time</h2>
 							<p className="text-xs text-muted-foreground">
-								{summary.step === 86400 ? "Daily totals" : "Hourly totals"}. Times are local. Hover for details.
+								{summary.step >= 2592000
+									? "30-day totals"
+									: summary.step >= 604800
+										? "Weekly totals"
+										: summary.step >= 86400
+											? "Daily totals"
+											: "Hourly totals"}
+								. Times are local. Hover for details.
 							</p>
 						</div>
 						<SecuritySelect
@@ -435,8 +397,9 @@ function SecurityView({ system, range }: { system: string; range: DateRange }) {
 			<EventTable system={system} range={range} fixedKind="ssh_failure" title="SSH failure" total={failures} />
 			<AllEvents system={system} range={range} />
 			<p className="text-xs text-muted-foreground">
-				History is retained for 30 days. Probe labels identify suspicious patterns and do not confirm a compromise. UFW
-				logging may be rate limited. Visitor IP addresses in older web logs cannot be verified.
+				All time shows every stored event. Retention is configured on the collector. Probe labels identify suspicious
+				patterns and do not confirm a compromise. UFW logging may be rate limited. Visitor IP addresses in older web
+				logs cannot be verified.
 			</p>
 		</>
 	)
@@ -686,7 +649,7 @@ function SecuritySelect({
 }) {
 	return (
 		<Select value={value || "__all"} onValueChange={(next) => onValueChange(next === "__all" ? "" : next)}>
-			<SelectTrigger aria-label={label} className="w-auto max-w-full min-w-28 gap-3">
+			<SelectTrigger aria-label={label} className="h-9 w-auto max-w-full min-w-28 gap-3">
 				<SelectValue />
 			</SelectTrigger>
 			<SelectContent>

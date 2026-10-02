@@ -4,6 +4,7 @@ After=systemd-journald.service nginx.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=0
 ExecStart=/usr/bin/python3 /opt/beszel-security/collector.py
 User=beszel-audit
 Group=beszel-audit
@@ -25,4 +26,5 @@ LockPersonality=true
 CapabilityBoundingSet=
 SystemCallArchitectures=native
 ReadWritePaths=/var/lib/beszel-security
-ReadOnlyPaths=/var/log/nginx /var/log/journal /run/log/journal
+ReadOnlyPaths=-/var/log/nginx -/var/log/journal -/run/log/journal
+# Text logs use their existing host permissions; no extra privileges are granted.

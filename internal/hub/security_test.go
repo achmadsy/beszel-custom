@@ -209,6 +209,34 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 		t.Fatalf("event date bounds incorrect: %s", result["items"])
 	}
 
+	db, err = sql.Open("sqlite", paths[ids[0]])
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldest := now - 120*86400
+	_, err = db.Exec("INSERT INTO events (id,occurred_at,source,kind,provenance,username) VALUES (92,?,'ssh','ssh_success','direct','historical-user')", oldest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	all, err := request("system="+ids[0]+"&range=all", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var since int64
+	json.Unmarshal(all["since"], &since)
+	if since != oldest {
+		t.Fatalf("all time did not start at oldest event: %d", since)
+	}
+	past, err := request(fmt.Sprintf("system=%s&from=%d&to=%d", ids[0], oldest, oldest+86400), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pastItems []map[string]any
+	json.Unmarshal(past["items"], &pastItems)
+	if len(pastItems) != 1 || pastItems[0]["username"] != "historical-user" {
+		t.Fatalf("older event missing: %s", past["items"])
+	}
 	for _, query := range []string{"", "system=unknown", "system=" + ids[0] + "&range=bad", "system=" + ids[0] + "&kind=invalid", "system=" + ids[0] + "&before=invalid"} {
 		if _, err := request(query, false); err == nil {
 			t.Fatalf("invalid query accepted: %s", query)
@@ -218,10 +246,16 @@ func TestSecurityAPIPerVPS(t *testing.T) {
 
 func TestSecurityCustomDateValidation(t *testing.T) {
 	now := time.Now().Unix()
+	for _, query := range []string{"range=all", fmt.Sprintf("from=%d&to=%d", now-365*86400, now)} {
+		e := &core.RequestEvent{Event: router.Event{Request: httptest.NewRequest("GET", "/?"+query, nil)}}
+		if _, _, err := securityBounds(e); err != nil {
+			t.Fatalf("historical range rejected: %v", err)
+		}
+	}
 	invalid := []string{
 		"from=abc&to=123", "from=&to=", fmt.Sprintf("from=%d", now-3600), fmt.Sprintf("to=%d", now),
 		fmt.Sprintf("from=%d&to=%d", now, now), fmt.Sprintf("from=%d&to=%d", now, now-3600),
-		fmt.Sprintf("from=%d&to=%d", now-32*86400, now), fmt.Sprintf("from=%d&to=%d", now, now+2*86400),
+		fmt.Sprintf("from=%d&to=%d", now, now+2*86400),
 	}
 	for _, query := range invalid {
 		e := &core.RequestEvent{Event: router.Event{Request: httptest.NewRequest("GET", "/?"+query, nil)}}
