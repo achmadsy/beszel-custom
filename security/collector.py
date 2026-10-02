@@ -109,9 +109,9 @@ def set_cursor(db, key, value):
 
 
 def add(db, source_id, when, source, kind, peer=None, client=None, provenance="direct", host=None, username=None, method=None, path=None, port=None, status=None, category=None):
-    if (CUTOFF and when < int(CUTOFF.timestamp())) or when > int((NOW + dt.timedelta(minutes=5)).timestamp()):
+    if (CUTOFF and when < int(CUTOFF.timestamp())) or when > int(time.time()) + 300:
         return
-    db.execute("INSERT INTO events(source_id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status,web_category) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET method=COALESCE(excluded.method,events.method),web_category=COALESCE(excluded.web_category,events.web_category),kind=CASE WHEN excluded.source='web' AND excluded.web_category IS NOT NULL THEN 'web_probe' ELSE events.kind END", (source_id, when, source, kind, peer, client, provenance, clean_text(host, 150) or None, clean_text(username, 100) or None, clean_text(method, 32) or None, (safe_path(path) if source == "web" else clean_text(path, 400)) or None, port, status, category))
+    db.execute("INSERT INTO events(source_id,occurred_at,source,kind,peer_ip,client_ip,provenance,host,username,method,path,port,status,web_category) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET method=COALESCE(excluded.method,events.method),web_category=COALESCE(excluded.web_category,events.web_category),kind=CASE WHEN excluded.source='web' AND excluded.web_category IS NOT NULL THEN 'web_probe' ELSE events.kind END WHERE (excluded.method IS NOT NULL AND excluded.method IS NOT events.method) OR (excluded.web_category IS NOT NULL AND (excluded.web_category IS NOT events.web_category OR events.kind!='web_probe'))", (source_id, when, source, kind, peer, client, provenance, clean_text(host, 150) or None, clean_text(username, 100) or None, clean_text(method, 32) or None, (safe_path(path) if source == "web" else clean_text(path, 400)) or None, port, status, category))
 
 
 def add_message(db, name, source_id, when, message):

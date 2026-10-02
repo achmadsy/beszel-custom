@@ -109,3 +109,14 @@ class AnalysisTests(unittest.TestCase):
             with patch.object(collector,'Path',side_effect=lambda p: folder if p=='/var/log' else Path(p)),patch.object(collector,'BACKFILL',True):
                 collector.historic_system(db)
         self.assertEqual(db.execute('SELECT COUNT(*),source_id,method FROM events').fetchone(),(1,'journal-original','publickey'))
+
+    def test_long_backfill_accepts_current_events_and_skips_unchanged_rows(self):
+        db=sqlite3.connect(':memory:');collector.init(db)
+        later=int(collector.NOW.timestamp())+600
+        with patch.object(collector.time,'time',return_value=later):
+            collector.add(db,'current',later,'ssh','ssh_probe')
+            before=db.total_changes
+            collector.add(db,'current',later,'ssh','ssh_probe')
+            self.assertEqual(db.total_changes,before)
+            collector.add(db,'future',later+301,'ssh','ssh_probe')
+        self.assertEqual(db.execute('SELECT COUNT(*),source_id FROM events').fetchone(),(1,'current'))
