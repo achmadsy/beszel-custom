@@ -120,3 +120,18 @@ class AnalysisTests(unittest.TestCase):
             self.assertEqual(db.total_changes,before)
             collector.add(db,'future',later+301,'ssh','ssh_probe')
         self.assertEqual(db.execute('SELECT COUNT(*),source_id FROM events').fetchone(),(1,'current'))
+
+    def test_backfill_keeps_preexisting_event_ids(self):
+        import hashlib
+        db=sqlite3.connect(':memory:');collector.init(db)
+        when=int(collector.NOW.timestamp())
+        line=collector.NOW.isoformat()+' host sshd: Accepted publickey for alice from 203.0.113.1 port 1234\n'
+        source_id='syslog:'+hashlib.sha256(line.encode()).hexdigest()
+        for key in ('journal-original',source_id):
+            collector.add(db,key,when,'ssh','ssh_success','203.0.113.1','203.0.113.1',username='alice',port=1234)
+        before=db.execute('SELECT id FROM events ORDER BY id').fetchall()
+        with tempfile.TemporaryDirectory() as directory:
+            folder=Path(directory);(folder/'auth.log').write_text(line)
+            with patch.object(collector,'Path',side_effect=lambda p: folder if p=='/var/log' else Path(p)),patch.object(collector,'BACKFILL',True):collector.historic_system(db)
+        self.assertEqual(db.execute('SELECT id FROM events ORDER BY id').fetchall(),before)
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE method='publickey'").fetchone()[0],2)

@@ -323,6 +323,7 @@ def historic_system(db):
                             continue
                         name = "ssh" if "sshd" in line else "ufw"
                         source_id = "syslog:" + hashlib.sha256(line.encode()).hexdigest()
+                        existing_id = db.execute("SELECT id FROM events WHERE source_id=?", (source_id,)).fetchone()
                         before = db.total_changes
                         add_message(db, name, source_id, when, line)
                         if db.total_changes != before:
@@ -331,7 +332,8 @@ def historic_system(db):
                             imported = db.execute("SELECT id,method,occurred_at,source,kind,peer_ip,username,port FROM events WHERE source_id=? AND source='ssh'", (source_id,)).fetchone()
                             if imported and imported[1]:
                                 db.execute("UPDATE events SET method=? WHERE id!=? AND occurred_at=? AND source=? AND kind=? AND peer_ip IS ? AND username IS ? AND port IS ? AND COALESCE(method,'')=''", (imported[1], imported[0], *imported[2:]))
-                            db.execute("DELETE FROM events WHERE source_id=? AND EXISTS (SELECT 1 FROM events AS other WHERE other.id != events.id AND other.occurred_at=events.occurred_at AND other.source=events.source AND other.kind=events.kind AND other.peer_ip IS events.peer_ip AND other.username IS events.username AND other.port IS events.port)", (source_id,))
+                            if existing_id is None:
+                                db.execute("DELETE FROM events WHERE source_id=? AND EXISTS (SELECT 1 FROM events AS other WHERE other.id != events.id AND other.occurred_at=events.occurred_at AND other.source=events.source AND other.kind=events.kind AND other.peer_ip IS events.peer_ip AND other.username IS events.username AND other.port IS events.port)", (source_id,))
             except OSError as error:
                 print(f"Could not read {file.name}: {error.strerror}", flush=True)
                 continue
