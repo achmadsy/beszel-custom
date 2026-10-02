@@ -220,6 +220,7 @@ Replace both system IDs with the IDs from Beszel. Mount directories rather than 
 
 ```sh
 go test -tags testing ./internal/hub -run Security
+python3 -m unittest discover -s security -p 'test_*.py'
 cd internal/site
 npx tsc -b
 npm run build
