@@ -60,7 +60,9 @@ func openSecurityDB(systemID string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=query_only(1)"}).String())
+	// The collector commits with the journal in DELETE mode, which briefly locks
+	// the whole database; wait out those commits instead of failing a request.
+	return sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(10000)"}).String())
 }
 
 func (h *Hub) securityDatabase(e *core.RequestEvent) (*sql.DB, error) {
